@@ -9,5 +9,5 @@ setup(
         'gym~=0.15.0',
         'Click~=7.0',
         'numpy~=1.17.4',
-        'tensorflow>=2.0',
+        'tensorflow>=2.0.0',
     ])
