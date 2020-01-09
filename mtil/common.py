@@ -85,7 +85,8 @@ class MILBenchPolicyNet(nn.Module):
 
 def _preproc_n_actions(n_actions_per_dim, other_act_tensor):
     n_actions_per_dim = torch.as_tensor(n_actions_per_dim,
-                                        dtype=other_act_tensor.dtype)
+                                        dtype=other_act_tensor.dtype,
+                                        device=other_act_tensor.device)
     # assert n_actions_per_dim.ndim == 1, n_actions_per_dim.shape
     # This is ridiculous. There has to be a better way of doing it.
     single_one = torch.ones((1, ),
