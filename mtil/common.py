@@ -1,88 +1,133 @@
 """Common tools for all of mtil package."""
-import tensorflow as tf
-from tensorflow import keras
-import tensorflow_probability as tfp
-from tf_agents.networks.categorical_projection_network import \
-    CategoricalProjectionNetwork
-from tf_agents.specs import distribution_spec, tensor_spec
+
+import torch
+from torch import nn
 
 
-class MultiCategoricalProjectionNetwork(CategoricalProjectionNetwork):
-    """Joint distribution over independent categorical variables. Useful for
-    the milbench suite because the action space is
-    {forward,stop,back}x{left,stop,right}x{open,close}."""
-    def __init__(self,
-                 sample_spec,
-                 logits_init_output_factor=0.1,
-                 name='MultiCategoricalProjectionNetwork'):
-        # TODO: do I have to do anything to support batching?
-        action_counts = sample_spec.maximum - sample_spec.minimum + 1
-        total_num_outputs = tf.reduce_sum(action_counts)
-        if tf.reduce_any(action_counts <= 0) or action_counts.ndim != 1:
-            raise ValueError("must have at least two actions available & "
-                             "have a 1D action spec")
+class MILBenchPreprocLayer(nn.Module):
+    """Takes a uint8 image in format [N,T,H,W,C] (a batch of several time steps
+    of H,W,C images) or [N,H,W,C] (i.e. T=1 time steps) and returns float image
+    (elements in [-1,1]) in format [N,C*T,H,W] for Torch."""
+    def forward(self, x):
+        assert x.dtype == torch.uint8, \
+            f"expected uint8 tensor but got {x.dtype} tensor"
 
-        output_shape = sample_spec.shape[:-1].concatenate([total_num_outputs])
-        output_spec = self._output_distribution_spec(output_shape, sample_spec)
-
-        # call up to class above this one
-        super(CategoricalProjectionNetwork,
-              self).__init__(input_tensor_spec=None,
-                             state_spec=(),
-                             output_spec=output_spec,
-                             name=name)
-
-        if not tensor_spec.is_bounded(sample_spec):
-            raise ValueError('sample_spec must be bounded. Got: %s.' %
-                             type(sample_spec))
-
-        if not tensor_spec.is_discrete(sample_spec):
-            raise ValueError('sample_spec must be discrete. Got: %s.' %
-                             sample_spec)
-
-        self._sample_spec = sample_spec
-        self._output_shape = output_shape
-
-        self._projection_layer = tf.keras.layers.Dense(
-            self._output_shape.num_elements(),
-            kernel_initializer=tf.compat.v1.keras.initializers.VarianceScaling(
-                scale=logits_init_output_factor),
-            bias_initializer=tf.keras.initializers.Zeros(),
-            name='all_logits')
-
-    def _output_distribution_spec(self, output_shape, sample_spec):
-        input_param_spec = {
-            'all_logits':
-            tensor_spec.TensorSpec(shape=output_shape, dtype=tf.float32),
-        }
-        action_counts = sample_spec.maximum - sample_spec.minimum + 1
-
-        def builder(logits):
-            logits_slices = tf.split(logits, action_counts, axis=1)
-            return tfp.distributions.Blockwise([
-                tfp.distributions.Categorical(logits=logits_slice)
-                for logits_slice in logits_slices
-            ])
-
-        return distribution_spec.DistributionSpec(builder,
-                                                  input_param_spec,
-                                                  sample_spec=sample_spec)
-
-
-class ImageScaleStackLayer(keras.layers.Layer):
-    def call(self, x):
-        # move uint8 pixel values into [-1, 1]
-        float_values = tf.cast(x, tf.float32) / 128.0 - 1
         if len(x.shape) == 5:
-            # also stack images in sequence along channels axis
-            float_values = tf.concat(
-                [float_values[:, i] for i in range(x.shape[1])], axis=-1)
-        return float_values
+            N, T, H, W, C = x.shape
+            # move channels to the beginning so it's [N,T,C,H,W]
+            x = x.permute((0, 1, 4, 2, 3))
+            # flatten along channels axis
+            x = x.reshape((N, T * C, H, W))
+        else:
+            N, H, W, C = x.shape
+            # just transpose channels axis to front, do nothing else
+            x = x.permute((0, 3, 1, 2))
 
-    def compute_output_shape(self, input_shape):
-        # "s" represents stacked sequence of recent images; "c" is channels
-        if len(input_shape) == 4:
-            return input_shape
-        assert len(input_shape) == 5, input_shape
-        b, s, h, w, c = input_shape
-        return (b, h, w, c * s)
+        assert (H, W) == (128, 128), \
+            f"(height,width)=({H},{W}), but should be (128,128) (try " \
+            f"resizing)"
+
+        # convert format and scale to [0,1]
+        x = x.to(torch.float32) / 127.5 - 1.0
+
+        return x
+
+
+class MILBenchPolicyNet(nn.Module):
+    """Convolutional policy network that yields some actino logits. Note this
+    network is specific to MILBench (b/c of preproc layer and action count)."""
+    def __init__(self,
+                 in_chans=3,
+                 n_actions=3 * 3 * 2,
+                 ActivationCls=torch.nn.ReLU):
+        super().__init__()
+        # this asserts that input is 128x128, and ensures that it is in
+        # [N,C,H,W] format with float32 values in [-1,1].
+        self.preproc = MILBenchPreprocLayer()
+        self.logit_generator = nn.Sequential(
+            # TODO: consider adding batch norm, skip layers, etc. to this
+            # at input: (128, 128)
+            nn.Conv2d(in_chans, 64, kernel_size=5, stride=1),
+            ActivationCls(),
+            # now: (124, 124)
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            ActivationCls(),
+            # now: (64, 64)
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            ActivationCls(),
+            # now: (32, 32)
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            ActivationCls(),
+            # now: (16, 16)
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            ActivationCls(),
+            # now (8, 8)
+            nn.Conv2d(128, 64, kernel_size=3, stride=2, padding=1),
+            ActivationCls(),
+            # now (4, 4), 64 channels, for 16*64=1024 elements total
+            nn.Flatten(),
+            # now: flat 1024-elem vector
+            nn.Linear(1024, 256),
+            ActivationCls(),
+            # now: flat 256-elem vector
+            nn.Linear(256, 256),
+            ActivationCls(),
+            # now: flat 256-elem vector
+            nn.Linear(256, n_actions),
+            # now: we get n_actions logits to use with softmax etc.
+        )
+
+    def forward(self, x):
+        preproc = self.preproc(x)
+        logits = self.logit_generator(preproc)
+        return logits
+
+
+def _preproc_n_actions(n_actions_per_dim, other_act_tensor):
+    n_actions_per_dim = torch.as_tensor(n_actions_per_dim,
+                                        dtype=other_act_tensor.dtype)
+    # assert n_actions_per_dim.ndim == 1, n_actions_per_dim.shape
+    # This is ridiculous. There has to be a better way of doing it.
+    single_one = torch.ones((1, ),
+                            device=n_actions_per_dim.device,
+                            dtype=n_actions_per_dim.dtype)
+    cat_action_nums = torch.cat((single_one, n_actions_per_dim[:-1]))
+    return n_actions_per_dim, torch.cumprod(cat_action_nums, 0)
+
+
+def md_to_flat_action(md_actions, n_actions_per_dim):
+    """Convert a tensor of MultiDiscrete actions to "flat" discrete actions."""
+    # should be int
+    assert not md_actions.is_floating_point(), md_actions.dtype
+    assert len(n_actions_per_dim) == md_actions.shape[-1], \
+        (n_actions_per_dim, md_actions.shape)
+
+    n_actions_per_dim, action_prods \
+        = _preproc_n_actions(n_actions_per_dim, md_actions)
+    action_prods_bcast = torch.reshape(
+        action_prods, (1, ) * (len(md_actions.shape) - 1) + action_prods.shape)
+
+    flat_acts = torch.sum(md_actions * action_prods_bcast, -1)
+
+    return flat_acts
+
+
+def flat_to_md_action(flat_actions, n_actions_per_dim):
+    """Convert a tensor of flat discrete actions to "MultiDiscrete" actions.
+    `flat_actions` can be of arbitrary shape [A, B, ...]; `n_actions_per_dim`
+    must be of dim 1 (call its length `N`). Will return tensor of shape [A, B,
+    ..., N]. Inverse of `md_to_flat_action`."""
+    assert not flat_actions.is_floating_point(), flat_actions.dtype
+    n_actions_per_dim, action_prods \
+        = _preproc_n_actions(n_actions_per_dim, flat_actions)
+
+    # decompose each "flat" action into a weighted sum of elements of
+    # action_prods
+    flat_copy = flat_actions.clone()
+    md_actions = flat_actions.new(flat_actions.shape +
+                                  (n_actions_per_dim.shape[0], ))
+    for i in range(n_actions_per_dim.shape[0])[::-1]:
+        md_actions[..., i] = flat_copy // action_prods[i]
+        flat_copy = flat_copy % action_prods[i]
+
+    return md_actions
