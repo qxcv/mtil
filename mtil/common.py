@@ -19,6 +19,7 @@ class MILBenchPreprocLayer(nn.Module):
             # flatten along channels axis
             x = x.reshape((N, T * C, H, W))
         else:
+            assert len(x.shape) == 4, x.shape
             N, H, W, C = x.shape
             # just transpose channels axis to front, do nothing else
             x = x.permute((0, 3, 1, 2))
@@ -81,54 +82,3 @@ class MILBenchPolicyNet(nn.Module):
         preproc = self.preproc(x)
         logits = self.logit_generator(preproc)
         return logits
-
-
-def _preproc_n_actions(n_actions_per_dim, other_act_tensor):
-    n_actions_per_dim = torch.as_tensor(n_actions_per_dim,
-                                        dtype=other_act_tensor.dtype,
-                                        device=other_act_tensor.device)
-    # assert n_actions_per_dim.ndim == 1, n_actions_per_dim.shape
-    # This is ridiculous. There has to be a better way of doing it.
-    single_one = torch.ones((1, ),
-                            device=n_actions_per_dim.device,
-                            dtype=n_actions_per_dim.dtype)
-    cat_action_nums = torch.cat((single_one, n_actions_per_dim[:-1]))
-    return n_actions_per_dim, torch.cumprod(cat_action_nums, 0)
-
-
-def md_to_flat_action(md_actions, n_actions_per_dim):
-    """Convert a tensor of MultiDiscrete actions to "flat" discrete actions."""
-    # should be int
-    assert not md_actions.is_floating_point(), md_actions.dtype
-    assert len(n_actions_per_dim) == md_actions.shape[-1], \
-        (n_actions_per_dim, md_actions.shape)
-
-    n_actions_per_dim, action_prods \
-        = _preproc_n_actions(n_actions_per_dim, md_actions)
-    action_prods_bcast = torch.reshape(
-        action_prods, (1, ) * (len(md_actions.shape) - 1) + action_prods.shape)
-
-    flat_acts = torch.sum(md_actions * action_prods_bcast, -1)
-
-    return flat_acts
-
-
-def flat_to_md_action(flat_actions, n_actions_per_dim):
-    """Convert a tensor of flat discrete actions to "MultiDiscrete" actions.
-    `flat_actions` can be of arbitrary shape [A, B, ...]; `n_actions_per_dim`
-    must be of dim 1 (call its length `N`). Will return tensor of shape [A, B,
-    ..., N]. Inverse of `md_to_flat_action`."""
-    assert not flat_actions.is_floating_point(), flat_actions.dtype
-    n_actions_per_dim, action_prods \
-        = _preproc_n_actions(n_actions_per_dim, flat_actions)
-
-    # decompose each "flat" action into a weighted sum of elements of
-    # action_prods
-    flat_copy = flat_actions.clone()
-    md_actions = flat_actions.new(flat_actions.shape +
-                                  (n_actions_per_dim.shape[0], ))
-    for i in range(n_actions_per_dim.shape[0])[::-1]:
-        md_actions[..., i] = flat_copy // action_prods[i]
-        flat_copy = flat_copy % action_prods[i]
-
-    return md_actions

@@ -2,49 +2,74 @@
 
 import datetime
 import os
+import random
 import uuid
 
-# from rlpyt.samplers.serial.sampler import SerialSampler
 import click
 import gym
 from milbench.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
-from rlpyt.utils.logging import logger
+import numpy as np
+from rlpyt.agents.pg.categorical import CategoricalPgAgent
+from rlpyt.envs.gym import GymEnvWrapper
+from rlpyt.samplers.parallel.cpu.collectors import CpuResetCollector
+from rlpyt.samplers.parallel.gpu.collectors import GpuResetCollector
+from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.utils.logging import context as log_ctx
+from rlpyt.utils.logging import logger
 from rlpyt.utils.prog_bar import ProgBarCounter
+from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
+from torch import nn
 import torch.nn.functional as F
 from torch.utils import data
 
-from mtil.common import MILBenchPolicyNet, flat_to_md_action, md_to_flat_action
+from mtil.common import MILBenchPolicyNet
 
 
-class BC:
-    def __init__(self, env):
-        pass
+class VanillaGymEnv(GymEnvWrapper):
+    """Useful for constructing rlpyt environments from Gym environment names
+    (as needed to, e.g., create agents/samplers/etc.)."""
+    def __init__(self, env_name, **kwargs):
+        env = gym.make(env_name)
+        super().__init__(env, **kwargs)
 
-    def train(self, n_epochs=100):
-        pass
+
+class AgentModelWrapper(nn.Module):
+    """Wraps a normal (observation -> logits) feedforward network so that (1)
+    it deals gracefully with the variable-dimensional inputs that the rlpyt
+    sampler gives it, (2) it produces action probabilities instead of logits,
+    and (3) it produces some value 'values' to keep CategoricalPgAgent
+    happy."""
+    def __init__(self, model_ctor, model_kwargs, model=None):
+        super().__init__()
+        if model is not None:
+            self.model = model
+        else:
+            self.model = model_ctor(**model_kwargs)
+
+    def forward(self, obs, prev_act, prev_rew):
+        # copied from AtariFfModel, then modified to match own situation
+        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)
+        logits = self.model(obs.view(T * B, *img_shape))
+        pi = F.softmax(logits, dim=-1)
+        # fake values (BC doesn't use them)
+        v = torch.zeros((T*B,), device=pi.device, dtype=pi.dtype)
+        pi, v = restore_leading_dims((pi, v), lead_dim, T, B)
+        return pi, v
 
 
-def eval_model(env, model, n_traj=10, dev=None):
+def eval_model(sampler, n_traj=10):
     scores = []
-    prog_bar = ProgBarCounter(n_traj)
-    dev = dev or next(model.parameters()).device
-    for traj_num in range(1, n_traj + 1):
-        obs = env.reset()
-        done = False
-        while not done:
-            th_obs = torch.as_tensor(obs[None], device=dev)
-            th_act_logits, = model(th_obs)
-            th_best_logit = torch.argmax(th_act_logits, keepdim=True)
-            th_action = flat_to_md_action(th_best_logit, env.action_space.nvec)
-            action = th_action.detach().cpu().numpy()
-            obs, rew, done, info = env.step(action)
-        prog_bar.update(traj_num)
-        scores.append(info['eval_score'])
-    prog_bar.stop()
-    logger.record_tabular_misc_stat("Score", scores)
+    while len(scores) < n_traj:
+        # can't see an obvious purpose to the 'itr' argument, so setting it to
+        # None
+        samples_pyt, _ = sampler.obtain_samples(None)
+        eval_scores = samples_pyt.env.env_info.eval_score
+        dones = samples_pyt.env.done
+        done_scores = eval_scores.flatten()[dones.flatten()]
+        scores.extend(done_scores)
+    return scores
 
 
 @click.group()
@@ -59,6 +84,7 @@ def cli():
     type=str,
     help="add preprocessor to the demos and test env (default: 'LoResStack')")
 @click.option("--use-gpu/--no-use-gpu", default=False, help="use GPU")
+@click.option("--gpu-idx", default=0, help="index of GPU to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
 @click.option("--epochs", default=100, help="epochs of training to perform")
@@ -69,7 +95,7 @@ def cli():
               help="unique name for this run")
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
-         run_name):
+         run_name, gpu_idx):
     # register original envs
     import milbench
     milbench.register_envs()
@@ -87,13 +113,20 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     if add_preproc:
         demo_trajs = preprocess_demos_with_wrapper(demo_trajs, orig_env_name,
                                                    add_preproc)
-    env = gym.make(env_name)
 
-    # set up torch
+    # local copy of Gym env, w/ args to create equivalent env in the sampler
+    env_ctor = VanillaGymEnv
+    env_ctor_kwargs = dict(env_name=env_name)
+    env = gym.make(env_name)
+    max_steps = env.spec.max_episode_steps
+
+    # set up seeds & devices
+    np.random.seed(seed)
+    random.seed(seed)
     torch.manual_seed(seed)
     use_gpu = use_gpu and torch.cuda.is_available()
     cpu_dev = torch.device("cpu")
-    dev = torch.device(["cpu", "cuda"][use_gpu])
+    dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
     print(f"Using device {dev}, seed {seed}")
 
     # convert dataset to Torch (always stored on CPU; we'll move one batch at a
@@ -117,23 +150,32 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     else:
         # frame stacking
         in_chans = obs_shape[-1] * obs_shape[0]
-    model = MILBenchPolicyNet(in_chans=in_chans) \
+    model_ctor = MILBenchPolicyNet
+    model_kwargs = dict(in_chans=in_chans)
+    model = model_ctor(**model_kwargs) \
         .to(dev)
+    # this is for syncing up weights appropriately
+    fake_agent_model = AgentModelWrapper(None, None, model).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=3e-4)
 
     # set up sampler for evaluation (TODO: consider setting up complicated
     # parallel GPU sampler)
-    # sampler = SerialSampler()
-    # sampler.initialiaze()
-
-    # some junk necessary to support TorchScript for forward-/back-prop
-    nvec = torch.as_tensor(env.action_space.nvec, device=dev)
+    sampler = SerialSampler(
+        env_ctor,
+        env_ctor_kwargs,
+        batch_T=max_steps,
+        max_decorrelation_steps=0,
+        batch_B=batch_size)
+    agent = CategoricalPgAgent(ModelCls=AgentModelWrapper,
+                               model_kwargs=dict(model_ctor=model_ctor,
+                                                 model_kwargs=model_kwargs))
+    sampler.initialize(agent, seed=np.random.randint(1 << 31))
+    agent.to_device(dev.index if use_gpu else None)
 
     # @torch.jit.script
-    def do_loss_forward_back(obs_batch, acts_batch, nvec):
+    def do_loss_forward_back(obs_batch, acts_batch):
         logits_flat = model(obs_batch)
-        labels_flat = md_to_flat_action(acts_batch, nvec)
-        loss = F.cross_entropy(logits_flat, labels_flat)
+        loss = F.cross_entropy(logits_flat, acts_batch.long())
         loss.backward()
         return loss.item()
 
@@ -175,7 +217,7 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
 
                 # compute loss & take opt step
                 opt.zero_grad()
-                loss = do_loss_forward_back(obs_batch, acts_batch, nvec)
+                loss = do_loss_forward_back(obs_batch, acts_batch)
                 opt.step()
 
                 # for logging
@@ -190,7 +232,9 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
             eval_n_traj = 10
             print(f"Evaluating {eval_n_traj} trajectories")
             model.eval()
-            eval_model(env, model, n_traj=eval_n_traj)
+            sampler.agent.load_state_dict(fake_agent_model.state_dict())
+            scores = eval_model(sampler, n_traj=eval_n_traj)
+            logger.record_tabular_misc_stat("Score", scores)
 
             # finish logging for this epoch
             logger.record_tabular("Epoch", epoch)
@@ -202,8 +246,8 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
                 'opt_state': opt.state_dict(),
             })
 
-            # TODO: three items:
-            # - (1) Try doing rollouts with rlpyt to evaluate model.
+            # TODO: a few items:
+            # - [DONE] (1) Try doing rollouts with rlpyt to evaluate model.
             # - [DONE] (2) Integrate with rlpyt's logging stuff (needs viskit).
             # - [DONE] (3) Save the model after training.
             # - (4) Refactor everything :)
