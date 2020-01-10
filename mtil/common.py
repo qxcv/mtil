@@ -1,5 +1,10 @@
 """Common tools for all of mtil package."""
 
+import random
+
+import gym
+import numpy as np
+from rlpyt.envs.gym import GymEnvWrapper
 import torch
 from torch import nn
 
@@ -35,7 +40,7 @@ class MILBenchPreprocLayer(nn.Module):
 
 
 class MILBenchPolicyNet(nn.Module):
-    """Convolutional policy network that yields some actino logits. Note this
+    """Convolutional policy network that yields some action logits. Note this
     network is specific to MILBench (b/c of preproc layer and action count)."""
     def __init__(self,
                  in_chans=3,
@@ -82,3 +87,18 @@ class MILBenchPolicyNet(nn.Module):
         preproc = self.preproc(x)
         logits = self.logit_generator(preproc)
         return logits
+
+
+class VanillaGymEnv(GymEnvWrapper):
+    """Useful for constructing rlpyt environments from Gym environment names
+    (as needed to, e.g., create agents/samplers/etc.)."""
+    def __init__(self, env_name, **kwargs):
+        env = gym.make(env_name)
+        super().__init__(env, **kwargs)
+
+
+def set_seeds(seed):
+    """Set all relevant PRNG seeds."""
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)

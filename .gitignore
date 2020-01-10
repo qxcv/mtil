@@ -3,5 +3,5 @@
 .#*
 *.swp
 *~
-demos/
-scratch/
+demos
+scratch
