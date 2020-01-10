@@ -89,13 +89,15 @@ def cli():
 @click.option("--batch-size", default=32, help="batch size")
 @click.option("--epochs", default=100, help="epochs of training to perform")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
+@click.option("--eval-n-traj", default=10,
+              help="number of trajectories to roll out on each evaluation")
 @click.option("--run-name",
               default=None,
               type=str,
               help="unique name for this run")
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
-         run_name, gpu_idx):
+         run_name, gpu_idx, eval_n_traj):
     # register original envs
     import milbench
     milbench.register_envs()
@@ -165,7 +167,7 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
         env_ctor_kwargs,
         batch_T=max_steps,
         max_decorrelation_steps=0,
-        batch_B=batch_size)
+        batch_B=min(eval_n_traj, batch_size))
     agent = CategoricalPgAgent(ModelCls=AgentModelWrapper,
                                model_kwargs=dict(model_ctor=model_ctor,
                                                  model_kwargs=model_kwargs))
@@ -229,7 +231,6 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
             progress.stop()
 
             # end-of-epoch evaluation
-            eval_n_traj = 10
             print(f"Evaluating {eval_n_traj} trajectories")
             model.eval()
             sampler.agent.load_state_dict(fake_agent_model.state_dict())
