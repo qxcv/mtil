@@ -1,12 +1,19 @@
 """Common tools for all of mtil package."""
 
+import datetime
+import os
 import random
+import uuid
 
 import gym
 import numpy as np
 from rlpyt.envs.gym import GymEnvWrapper
+from rlpyt.utils.collections import AttrDict
+from rlpyt.utils.logging import context as log_ctx
+from rlpyt.utils.logging import logger
 import torch
 from torch import nn
+from torch.utils import data
 
 
 class MILBenchPreprocLayer(nn.Module):
@@ -17,6 +24,8 @@ class MILBenchPreprocLayer(nn.Module):
         assert x.dtype == torch.uint8, \
             f"expected uint8 tensor but got {x.dtype} tensor"
 
+        # TODO: fix this, I don't think it's correct now that I'm concatenating
+        # everything along the channels axis.
         if len(x.shape) == 5:
             N, T, H, W, C = x.shape
             # move channels to the beginning so it's [N,T,C,H,W]
@@ -39,18 +48,12 @@ class MILBenchPreprocLayer(nn.Module):
         return x
 
 
-class MILBenchPolicyNet(nn.Module):
-    """Convolutional policy network that yields some action logits. Note this
-    network is specific to MILBench (b/c of preproc layer and action count)."""
-    def __init__(self,
-                 in_chans=3,
-                 n_actions=3 * 3 * 2,
-                 ActivationCls=torch.nn.ReLU):
+class MILBenchFeatureNetwork(nn.Module):
+    """Convolutional feature extractor to process 128x128 images down into
+    1024-dimensional feature vectors."""
+    def __init__(self, in_chans=3, ActivationCls=torch.nn.ReLU):
         super().__init__()
-        # this asserts that input is 128x128, and ensures that it is in
-        # [N,C,H,W] format with float32 values in [-1,1].
-        self.preproc = MILBenchPreprocLayer()
-        self.logit_generator = nn.Sequential(
+        self.feature_generator = nn.Sequential(
             # TODO: consider adding batch norm, skip layers, etc. to this
             # at input: (128, 128)
             nn.Conv2d(in_chans, 64, kernel_size=5, stride=1),
@@ -71,22 +74,16 @@ class MILBenchPolicyNet(nn.Module):
             nn.Conv2d(128, 64, kernel_size=3, stride=2, padding=1),
             ActivationCls(),
             # now (4, 4), 64 channels, for 16*64=1024 elements total
-            nn.Flatten(),
-            # now: flat 1024-elem vector
-            nn.Linear(1024, 256),
-            ActivationCls(),
-            # now: flat 256-elem vector
-            nn.Linear(256, 256),
-            ActivationCls(),
-            # now: flat 256-elem vector
-            nn.Linear(256, n_actions),
-            # now: we get n_actions logits to use with softmax etc.
+            # nn.Flatten(),
+            # finally: flat 1024-elem vector
+            # EDIT 2020-01-13: removing Flatten() layer & doing flattening
+            # manually for Torch 1.2 compat.
         )
 
     def forward(self, x):
-        preproc = self.preproc(x)
-        logits = self.logit_generator(preproc)
-        return logits
+        nonflat_feats = self.feature_generator(x)
+        flat_feats = nonflat_feats.view(nonflat_feats.shape[:1] + (-1,))
+        return flat_feats
 
 
 class VanillaGymEnv(GymEnvWrapper):
@@ -102,3 +99,66 @@ def set_seeds(seed):
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)
+
+
+def make_unique_run_name(algo, orig_env_name):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    unique_suff = uuid.uuid4().hex[-6:]
+    return f"{algo}-{orig_env_name}-{timestamp}-{unique_suff}"
+
+
+def make_logger_ctx(out_dir, algo, orig_env_name, custom_run_name=None,
+                    **kwargs):
+    # for logging & model-saving
+    if custom_run_name is None:
+        run_name = make_unique_run_name(algo, orig_env_name)
+    else:
+        run_name = custom_run_name
+    logger.set_snapshot_gap(10)
+    log_dir = os.path.abspath(out_dir)
+    # this is irrelevant so long as it's a prefix of log_dir
+    log_ctx.LOG_DIR = log_dir
+    os.makedirs(out_dir, exist_ok=True)
+    return log_ctx.logger_context(out_dir,
+                                  run_ID=run_name,
+                                  name="mtil",
+                                  snapshot_mode="gap",
+                                  **kwargs)
+
+
+def trajectories_to_loader(demo_trajs, batch_size):
+    """Re-format demonstration trajectories as a Torch DataLoader."""
+    # convert dataset to Torch (always stored on CPU; we'll move one batch at a
+    # time to the GPU)
+    cpu_dev = torch.device("cpu")
+    all_obs = torch.cat([
+        torch.as_tensor(traj.obs[:-1], device=cpu_dev) for traj in demo_trajs
+    ])
+    all_acts = torch.cat(
+        [torch.as_tensor(traj.acts, device=cpu_dev) for traj in demo_trajs])
+    dataset = data.TensorDataset(all_obs, all_acts)
+    loader = data.DataLoader(dataset,
+                             batch_size=batch_size,
+                             pin_memory=True,
+                             shuffle=True,
+                             drop_last=True)
+    return loader
+
+
+class MILBenchTrajInfo(AttrDict):
+    """TrajInfo class that returns includes a score for the agent. Also
+    includes trajectory length and 'base' reward to ensure that they are both
+    zero."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.Score = 0
+        self.Length = 0
+        self.BaseReward = 0
+
+    def step(self, observation, action, reward, done, agent_info, env_info):
+        self.Score += env_info.eval_score
+        self.Length += 1
+        self.BaseReward += reward
+
+    def terminate(self, observation):
+        return self

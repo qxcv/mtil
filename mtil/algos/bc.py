@@ -1,8 +1,5 @@
 """Single-task behavioural cloning (BC)."""
-
-import datetime
 import os
-import uuid
 
 import click
 import gym
@@ -11,16 +8,47 @@ from milbench.baselines.saved_trajectories import (
 import numpy as np
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.samplers.serial.sampler import SerialSampler
-from rlpyt.utils.logging import context as log_ctx
 from rlpyt.utils.logging import logger
 from rlpyt.utils.prog_bar import ProgBarCounter
 from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch.utils import data
 
-from mtil.common import MILBenchPolicyNet, VanillaGymEnv, set_seeds
+from mtil.common import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
+                         VanillaGymEnv, make_logger_ctx, set_seeds,
+                         trajectories_to_loader)
+
+
+class MILBenchPolicyNet(nn.Module):
+    """Convolutional policy network that yields some action logits. Note this
+    network is specific to MILBench (b/c of preproc layer and action count)."""
+    def __init__(self,
+                 in_chans=3,
+                 n_actions=3 * 3 * 2,
+                 ActivationCls=torch.nn.ReLU):
+        super().__init__()
+        # this asserts that input is 128x128, and ensures that it is in
+        # [N,C,H,W] format with float32 values in [-1,1].
+        self.preproc = MILBenchPreprocLayer()
+        self.feature_extractor = MILBenchFeatureNetwork(
+            in_chans=in_chans, ActivationCls=ActivationCls)
+        self.logit_generator = nn.Sequential(
+            nn.Linear(1024, 256),
+            ActivationCls(),
+            # now: flat 256-elem vector
+            nn.Linear(256, 256),
+            ActivationCls(),
+            # now: flat 256-elem vector
+            nn.Linear(256, n_actions),
+            # now: n_actions-dimensional logit vector
+        )
+
+    def forward(self, x):
+        preproc = self.preproc(x)
+        features = self.feature_extractor(preproc)
+        logits = self.logit_generator(features)
+        return logits
 
 
 class AgentModelWrapper(nn.Module):
@@ -58,48 +86,6 @@ def eval_model(sampler, n_traj=10):
         done_scores = eval_scores.flatten()[dones.flatten()]
         scores.extend(done_scores)
     return scores
-
-
-def trajectories_to_torch(demo_trajs, batch_size):
-    """Re-format demonstration trajectories as a Torch DataLoader."""
-    # convert dataset to Torch (always stored on CPU; we'll move one batch at a
-    # time to the GPU)
-    cpu_dev = torch.device("cpu")
-    all_obs = torch.cat([
-        torch.as_tensor(traj.obs[:-1], device=cpu_dev) for traj in demo_trajs
-    ])
-    all_acts = torch.cat(
-        [torch.as_tensor(traj.acts, device=cpu_dev) for traj in demo_trajs])
-    dataset = data.TensorDataset(all_obs, all_acts)
-    loader = data.DataLoader(dataset,
-                             batch_size=batch_size,
-                             pin_memory=True,
-                             shuffle=True,
-                             drop_last=True)
-    return loader
-
-
-def make_unique_run_name(orig_env_name):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    unique_suff = uuid.uuid4().hex[-6:]
-    return f"bc-{orig_env_name}-{timestamp}-{unique_suff}"
-
-
-def make_logger_ctx(out_dir, orig_env_name, custom_run_name=None):
-    # for logging & model-saving
-    if custom_run_name is None:
-        run_name = make_unique_run_name(orig_env_name)
-    else:
-        run_name = custom_run_name
-    logger.set_snapshot_gap(10)
-    log_dir = os.path.abspath(out_dir)
-    # this is irrelevant so long as it's a prefix of log_dir
-    log_ctx.LOG_DIR = log_dir
-    os.makedirs(out_dir, exist_ok=True)
-    return log_ctx.logger_context(out_dir,
-                                  run_ID=run_name,
-                                  name="mtil",
-                                  snapshot_mode="gap")
 
 
 def do_epoch_training(loader, model, opt, dev):
@@ -197,7 +183,7 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     if add_preproc:
         demo_trajs = preprocess_demos_with_wrapper(demo_trajs, orig_env_name,
                                                    add_preproc)
-    loader = trajectories_to_torch(demo_trajs, batch_size)
+    loader = trajectories_to_loader(demo_trajs, batch_size)
 
     # local copy of Gym env, w/ args to create equivalent env in the sampler
     env_ctor = VanillaGymEnv
@@ -233,7 +219,7 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     sampler.initialize(agent, seed=np.random.randint(1 << 31))
     agent.to_device(dev.index if use_gpu else None)
 
-    with make_logger_ctx(out_dir, orig_env_name, run_name):
+    with make_logger_ctx(out_dir, "bc", orig_env_name, run_name):
         # save full model initially so we have something to put our saved
         # parameters in
         torch.save(model,
