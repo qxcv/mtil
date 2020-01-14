@@ -24,19 +24,10 @@ class MILBenchPreprocLayer(nn.Module):
         assert x.dtype == torch.uint8, \
             f"expected uint8 tensor but got {x.dtype} tensor"
 
-        # TODO: fix this, I don't think it's correct now that I'm concatenating
-        # everything along the channels axis.
-        if len(x.shape) == 5:
-            N, T, H, W, C = x.shape
-            # move channels to the beginning so it's [N,T,C,H,W]
-            x = x.permute((0, 1, 4, 2, 3))
-            # flatten along channels axis
-            x = x.reshape((N, T * C, H, W))
-        else:
-            assert len(x.shape) == 4, x.shape
-            N, H, W, C = x.shape
-            # just transpose channels axis to front, do nothing else
-            x = x.permute((0, 3, 1, 2))
+        assert len(x.shape) == 4, x.shape
+        N, H, W, C = x.shape
+        # just transpose channels axis to front, do nothing else
+        x = x.permute((0, 3, 1, 2))
 
         assert (H, W) == (128, 128), \
             f"(height,width)=({H},{W}), but should be (128,128) (try " \
