@@ -465,46 +465,6 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
     with make_logger_ctx(out_dir, "gail", orig_env_name, run_name):
         runner.train()
 
-    # Here's what Example 3 (A2C) does:
-    #
-    # sampler = Sampler(
-    #     EnvCls=AtariEnv,
-    #     env_kwargs=dict(game=game),
-    #     batch_T=5,  # 5 time-steps per sampler iteration.
-    #     batch_B=16,  # 16 parallel environments.
-    #     max_decorrelation_steps=400,
-    # )
-    # algo = A2C()
-    # agent = AtariFfAgent()
-    # runner = MinibatchRl(
-    #     algo=algo,
-    #     agent=agent,
-    #     sampler=sampler,
-    #     n_steps=50e6,
-    #     log_interval_steps=1e5,
-    #     affinity=affinity,
-    # )
-    # config = dict(game=game); name = "a2c_" + game; log_dir = "example_3"
-    # with logger_context(log_dir, run_ID, name, config):
-    #     runner.train()
-
-    # Two things I find confusing:
-    # (1) What does the agent need to do?
-    # (2) What does MinibatchRl do? Can I re-use it?
-
-    # Answers to those questions:
-    # (1) Agent only manages action sampling & value computation. It also
-    #     serves as a container for your policy model, which is useful during
-    #     training. I can just use CategoricalPgAgent; no special code needed.
-    # (2) A "runner" is just a class that provides a .train() method that you
-    #     can call once to train your policy. The MinibatchRl* runners have
-    #     some support code for initialising the policy and sampler that gets
-    #     called once on .train(). Within .train(), they alternate between
-    #     collecting samples, optimising the RL algorithm, and logging
-    #     "diagnostics" (like total # of updates etc., ratio between number of
-    #     trajectories sampled & number of updates, etc.). I can probably just
-    #     override this method.
-
 
 if __name__ == '__main__':
     main()
