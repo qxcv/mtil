@@ -3,8 +3,10 @@
 import datetime
 import os
 import random
+import sys
 import uuid
 
+import click
 import gym
 import numpy as np
 from rlpyt.envs.gym import GymEnvWrapper
@@ -153,3 +155,21 @@ class MILBenchTrajInfo(AttrDict):
 
     def terminate(self, observation):
         return self
+
+
+def sane_click_init(cli):
+    """Initialise Click in a sensible way that prevents it from catching
+    KeyboardInterrupt exceptions, but still allows it to show usage messages.
+    `cli` should be a function decorated with `@click.group` that you want to
+    execute, or a function decorated with `@cli.command` for some group
+    `cli`."""
+    try:
+        with cli.make_context(sys.argv[0], sys.argv[1:]) as ctx:
+            cli.invoke(ctx)
+    except click.ClickException as e:
+        e.show()
+        sys.exit(e.exit_code)
+    except click.exceptions.Exit as e:
+        if e.exit_code == 0:
+            sys.exit(e.exit_code)
+        raise

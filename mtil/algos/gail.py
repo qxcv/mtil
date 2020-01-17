@@ -2,6 +2,7 @@
 (GAIL)."""
 from collections import namedtuple
 import itertools
+import multiprocessing
 
 import click
 import gym
@@ -10,7 +11,8 @@ from milbench.baselines.saved_trajectories import (
 import numpy as np
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.runners.minibatch_rl import MinibatchRl
-from rlpyt.samplers.serial.sampler import SerialSampler
+from rlpyt.samplers.parallel.cpu.sampler import CpuSampler
+from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.utils.buffer import (buffer_from_example, buffer_func,
                                 get_leading_dims, torchify_buffer)
 from rlpyt.utils.collections import namedarraytuple
@@ -23,7 +25,7 @@ import torch.nn.functional as F
 
 from mtil.common import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
                          MILBenchTrajInfo, VanillaGymEnv, make_logger_ctx,
-                         set_seeds, trajectories_to_loader)
+                         sane_click_init, set_seeds, trajectories_to_loader)
 from mtil.reward_injection_wrappers import CustomRewardPPO
 
 DiscrimReplaySamples = namedarraytuple("DiscrimReplaySamples",
@@ -342,6 +344,10 @@ def cli():
     help="add preprocessor to the demos and test env (default: 'LoResStack')")
 @click.option("--use-gpu/--no-use-gpu", default=False, help="use GPU")
 @click.option("--gpu-idx", default=0, help="index of GPU to use")
+@click.option("--n-workers",
+              default=None,
+              type=int,
+              help="number of rollout workers")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--epochs", default=1000, help="epochs of training to perform")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
@@ -374,12 +380,23 @@ def cli():
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
          disc_batch_size, epochs, out_dir, run_name, gpu_idx, eval_n_traj,
-         disc_up_per_itr, total_n_steps, log_interval_steps):
+         disc_up_per_itr, total_n_steps, log_interval_steps, n_workers):
     # set up seeds & devices
     set_seeds(seed)
     use_gpu = use_gpu and torch.cuda.is_available()
     dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
-    print(f"Using device {dev}, seed {seed}")
+    cpu_count = multiprocessing.cpu_count()
+    n_workers = max(1, cpu_count // 2) if n_workers is None else n_workers
+    assert n_workers < cpu_count, \
+        f"can't have n_workers={n_workers} > cpu_count={cpu_count}"
+    # TODO: figure out a better way of assigning work to cores (why can't my OS
+    # scheduler do it? Grumble grumble…).
+    affinity = dict(
+        cuda_idx=gpu_idx,
+        # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])
+        workers_cpus=list(range(n_workers)),
+    )
+    print(f"Using device {dev}, seed {seed}, affinity {affinity}")
 
     # register original envs
     import milbench
@@ -410,12 +427,16 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
 
     # TODO: replace this with CpuSampler or GpuSampler, as appropriate for
     # device
-    sampler = SerialSampler(env_ctor,
-                            env_ctor_kwargs,
-                            max_decorrelation_steps=env.spec.max_episode_steps,
-                            TrajInfoCls=MILBenchTrajInfo,
-                            batch_T=batch_T,
-                            batch_B=batch_B)
+    if use_gpu:
+        sampler_ctor = GpuSampler
+    else:
+        sampler_ctor = CpuSampler
+    sampler = sampler_ctor(env_ctor,
+                           env_ctor_kwargs,
+                           max_decorrelation_steps=env.spec.max_episode_steps,
+                           TrajInfoCls=MILBenchTrajInfo,
+                           batch_T=batch_T,
+                           batch_B=batch_B)
 
     # should be (H,W,C) even w/ frame stack
     assert len(env.observation_space.shape) == 3, env.observation_space.shape
@@ -459,7 +480,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         # this gives us a fairly constant interval between log outputs)
         log_interval_steps=log_interval_steps,
         # TODO: figure out whether I need to set affinity to anything
-        # affinity=affinity,
+        affinity=affinity,
     )
 
     with make_logger_ctx(out_dir, "gail", orig_env_name, run_name):
@@ -467,4 +488,4 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
 
 
 if __name__ == '__main__':
-    main()
+    sane_click_init(main)
