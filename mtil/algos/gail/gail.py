@@ -177,6 +177,8 @@ GAILInfo = namedtuple(
 def _compute_gail_stats(disc_logits, is_real_labels):
     """Returns dict for use in constructing GAILInfo later on. Provides a dict
     containing every field except DiscMeanXEnt."""
+    # Reminder: in GAIL, high output = predicted to be from expert. In arrays
+    # below, 1 = expert and 0 = novice.
     pred_labels = (disc_logits > 0).to(dtype=torch.float32, device='cpu')
     real_labels = (is_real_labels > 0).to(dtype=torch.float32, device='cpu')
     torch_dict = dict(
@@ -184,7 +186,7 @@ def _compute_gail_stats(disc_logits, is_real_labels):
         DiscAccExpert=torch.mean(
             (pred_labels[real_labels.nonzero()] > 0).to(torch.float32)),
         DiscAccNovice=torch.mean(
-            (pred_labels[(1 - real_labels).nonzero()] > 0).to(torch.float32)),
+            (pred_labels[(1 - real_labels).nonzero()] <= 0).to(torch.float32)),
         DiscFracExpertTrue=(torch.sum(real_labels) / real_labels.shape[0]),
         DiscFracExpertPred=(torch.sum(pred_labels) / pred_labels.shape[0]),
         DiscMeanLabelEnt=-torch.mean(
@@ -260,10 +262,11 @@ class GAILOptimiser:
             # PyTorch docs).
             #
             # Hence GAIL is like "reverse logistic regression" where you label
-            # expert demonstrations as 1 and fake (novice) demonstrations as 0,
-            # then flip the sign of the loss.
+            # expert demonstrations as 0 and fake (novice) demonstrations as 1,
+            # then flip the sign of the loss. I have no idea why they write it
+            # out that way.
             loss = -F.binary_cross_entropy_with_logits(
-                logits, is_real_label, reduction='mean')
+                logits, 1 - is_real_label, reduction='mean')
             loss.backward()
             self.opt.step()
 

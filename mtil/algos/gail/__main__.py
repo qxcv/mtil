@@ -1,6 +1,11 @@
 """Main entry point for GAIL algorithm. Separated from actual implementation so
 that parts of the implementation can be pickled."""
 import multiprocessing as mp
+# 'import readline' is necessary to stop pdb.set_trace() from segfaulting in
+# rl_initialize when importing readline. Problematic import is
+# 'milbench.baselines.saved_trajectories' (putting this import after that means
+# the segfault still happens). Haven't had time to chase down.
+import readline
 
 import click
 from milbench.baselines.saved_trajectories import (
