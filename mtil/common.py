@@ -143,7 +143,7 @@ def trajectories_to_loader(demo_trajs, batch_size):
     dataset = data.TensorDataset(all_obs, all_acts)
     loader = data.DataLoader(dataset,
                              batch_size=batch_size,
-                             pin_memory=True,
+                             pin_memory=False,
                              shuffle=True,
                              drop_last=True)
     return loader

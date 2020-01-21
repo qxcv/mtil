@@ -138,8 +138,9 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
                                    model_kwargs=dict(in_chans=in_chans,
                                                      n_actions=n_actions))
 
-    discriminator = MILBenchDiscriminator(in_chans=in_chans, act_dim=n_actions)
-    reward_model = RewardModel(discriminator)
+    discriminator = MILBenchDiscriminator(
+            in_chans=in_chans, act_dim=n_actions).to(dev)
+    reward_model = RewardModel(discriminator).to(dev)
     # TODO: figure out what pol_batch_size should be/do, and what relation it
     # should have with sampler batch size
     # TODO: also consider adding a BC loss to the policy (this will have to be
