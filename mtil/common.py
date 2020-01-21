@@ -1,6 +1,8 @@
 """Common tools for all of mtil package."""
 
+from collections import namedtuple
 import datetime
+import multiprocessing
 import os
 import random
 import sys
@@ -8,8 +10,12 @@ import uuid
 
 import click
 import gym
+from gym.wrappers.time_limit import TimeLimit
+from milbench import register_envs
 import numpy as np
+from rlpyt.envs.base import EnvStep
 from rlpyt.envs.gym import GymEnvWrapper
+from rlpyt.spaces.gym_wrapper import GymSpaceWrapper
 from rlpyt.utils.collections import AttrDict
 from rlpyt.utils.logging import context as log_ctx
 from rlpyt.utils.logging import logger
@@ -75,7 +81,7 @@ class MILBenchFeatureNetwork(nn.Module):
 
     def forward(self, x):
         nonflat_feats = self.feature_generator(x)
-        flat_feats = nonflat_feats.view(nonflat_feats.shape[:1] + (-1,))
+        flat_feats = nonflat_feats.view(nonflat_feats.shape[:1] + (-1, ))
         return flat_feats
 
 
@@ -85,6 +91,57 @@ class VanillaGymEnv(GymEnvWrapper):
     def __init__(self, env_name, **kwargs):
         env = gym.make(env_name)
         super().__init__(env, **kwargs)
+
+
+MILBenchInfo = namedtuple('MILBenchInfo', ['eval_score', 'timeout'])
+
+
+class MILBenchGymEnv(GymEnvWrapper):
+    """Version of GymEnvWrapper that dispenses with dynamically-created
+    namedtuple nonsense & instead uses a fixed namedtuple that's specific to
+    MILBench. Original version copied out of rlpyt code."""
+    def __init__(self,
+                 env_name,
+                 act_null_value=0,
+                 obs_null_value=0,
+                 force_float32=True):
+        register_envs()  # just in case
+        self.env = gym.make(env_name)
+        # skip original constructor for GymEnvWrapper & go straight to Wrapper
+        super(gym.Wrapper, self).__init__()
+        o = self.env.reset()
+        o, r, d, info = self.env.step(self.env.action_space.sample())
+        env_ = self.env
+        time_limit = isinstance(self.env, TimeLimit)
+        while not time_limit and hasattr(env_, "env"):
+            env_ = env_.env
+            time_limit = isinstance(self.env, TimeLimit)
+        if time_limit:
+            info["timeout"] = False  # gym's TimeLimit.truncated invalid name.
+        self._time_limit = time_limit
+        self.action_space = GymSpaceWrapper(
+            space=self.env.action_space,
+            name="act",
+            null_value=act_null_value,
+            force_float32=force_float32)
+        self.observation_space = GymSpaceWrapper(
+            space=self.env.observation_space,
+            name="obs",
+            null_value=obs_null_value,
+            force_float32=force_float32)
+
+    def step(self, action):
+        a = self.action_space.revert(action)
+        o, r, d, info = self.env.step(a)
+        obs = self.observation_space.convert(o)
+        if self._time_limit:
+            if "TimeLimit.truncated" in info:
+                info["timeout"] = info.pop("TimeLimit.truncated")
+            else:
+                info["timeout"] = False
+        info = MILBenchInfo(*(info.get(field)
+                              for field in MILBenchInfo._fields))
+        return EnvStep(obs, r, d, info)
 
 
 def set_seeds(seed):
@@ -100,7 +157,10 @@ def make_unique_run_name(algo, orig_env_name):
     return f"{algo}-{orig_env_name}-{timestamp}-{unique_suff}"
 
 
-def make_logger_ctx(out_dir, algo, orig_env_name, custom_run_name=None,
+def make_logger_ctx(out_dir,
+                    algo,
+                    orig_env_name,
+                    custom_run_name=None,
                     **kwargs):
     # for logging & model-saving
     if custom_run_name is None:
@@ -173,3 +233,52 @@ def sane_click_init(cli):
         if e.exit_code == 0:
             sys.exit(e.exit_code)
         raise
+
+
+# Spec data:
+#
+# - spec.id
+# - spec.reward_threshold
+# - spec.nondeterministic
+# - spec.max_episode_steps
+# - spec.entry_point
+# - spec._kwargs
+#
+# Everything except entry_point and spec._kwargs is probably pickle-safe.
+EnvMeta = namedtuple('EnvMeta', ['observation_space', 'action_space', 'spec'])
+FilteredSpec = namedtuple(
+    'FilteredSpec',
+    ['id', 'reward_threshold', 'nondeterministic', 'max_episode_steps'])
+
+
+def _get_env_meta_target(env_name, rv_dict):
+    register_envs()  # in case this proc was spawned
+    env = gym.make(env_name)
+    spec = FilteredSpec(*(getattr(env.spec, field)
+                          for field in FilteredSpec._fields))
+    meta = EnvMeta(observation_space=env.observation_space,
+                   action_space=env.action_space,
+                   spec=spec)
+    rv_dict['result'] = meta
+    env.close()
+
+
+def get_env_meta(env_name, ctx=multiprocessing):
+    """Spawn a subprocess and use that to get metadata about an environment
+    (env_spec, observation_space, action_space, etc.). Can optionally be passed
+    a custom multiprocessing context to spawn subprocess with (e.g. so you can
+    use 'spawn' method rather than the default 'fork')."""
+    mgr = ctx.Manager()
+    rv_dict = mgr.dict()
+    proc = ctx.Process(target=_get_env_meta_target, args=(env_name, rv_dict))
+    try:
+        proc.start()
+        proc.join(30)
+    finally:
+        proc.terminate()
+    if proc.exitcode != 0:
+        raise multiprocessing.ProcessError(
+            f"nonzero exit code {proc.exitcode} when collecting metadata "
+            f"for '{env_name}'")
+    result = rv_dict['result']
+    return result
