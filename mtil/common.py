@@ -85,63 +85,14 @@ class MILBenchFeatureNetwork(nn.Module):
         return flat_feats
 
 
-class VanillaGymEnv(GymEnvWrapper):
+class MILBenchGymEnv(GymEnvWrapper):
     """Useful for constructing rlpyt environments from Gym environment names
-    (as needed to, e.g., create agents/samplers/etc.)."""
+    (as needed to, e.g., create agents/samplers/etc.). Will automatically
+    register MILBench envs first."""
     def __init__(self, env_name, **kwargs):
+        register_envs()
         env = gym.make(env_name)
         super().__init__(env, **kwargs)
-
-
-MILBenchInfo = namedtuple('MILBenchInfo', ['eval_score', 'timeout'])
-
-
-class MILBenchGymEnv(GymEnvWrapper):
-    """Version of GymEnvWrapper that dispenses with dynamically-created
-    namedtuple nonsense & instead uses a fixed namedtuple that's specific to
-    MILBench. Original version copied out of rlpyt code."""
-    def __init__(self,
-                 env_name,
-                 act_null_value=0,
-                 obs_null_value=0,
-                 force_float32=True):
-        register_envs()  # just in case
-        self.env = gym.make(env_name)
-        # skip original constructor for GymEnvWrapper & go straight to Wrapper
-        super(gym.Wrapper, self).__init__()
-        o = self.env.reset()
-        o, r, d, info = self.env.step(self.env.action_space.sample())
-        env_ = self.env
-        time_limit = isinstance(self.env, TimeLimit)
-        while not time_limit and hasattr(env_, "env"):
-            env_ = env_.env
-            time_limit = isinstance(self.env, TimeLimit)
-        if time_limit:
-            info["timeout"] = False  # gym's TimeLimit.truncated invalid name.
-        self._time_limit = time_limit
-        self.action_space = GymSpaceWrapper(
-            space=self.env.action_space,
-            name="act",
-            null_value=act_null_value,
-            force_float32=force_float32)
-        self.observation_space = GymSpaceWrapper(
-            space=self.env.observation_space,
-            name="obs",
-            null_value=obs_null_value,
-            force_float32=force_float32)
-
-    def step(self, action):
-        a = self.action_space.revert(action)
-        o, r, d, info = self.env.step(a)
-        obs = self.observation_space.convert(o)
-        if self._time_limit:
-            if "TimeLimit.truncated" in info:
-                info["timeout"] = info.pop("TimeLimit.truncated")
-            else:
-                info["timeout"] = False
-        info = MILBenchInfo(*(info.get(field)
-                              for field in MILBenchInfo._fields))
-        return EnvStep(obs, r, d, info)
 
 
 def set_seeds(seed):
