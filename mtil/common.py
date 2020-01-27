@@ -10,12 +10,9 @@ import uuid
 
 import click
 import gym
-from gym.wrappers.time_limit import TimeLimit
 from milbench import register_envs
 import numpy as np
-from rlpyt.envs.base import EnvStep
 from rlpyt.envs.gym import GymEnvWrapper
-from rlpyt.spaces.gym_wrapper import GymSpaceWrapper
 from rlpyt.utils.collections import AttrDict
 from rlpyt.utils.logging import context as log_ctx
 from rlpyt.utils.logging import logger
@@ -147,6 +144,51 @@ def trajectories_to_loader(demo_trajs, batch_size):
                              shuffle=True,
                              drop_last=True)
     return loader
+
+
+def trajectories_to_loader_mt(demo_trajs_by_env, batch_size):
+    """Like trajectories_to_loader, but for multi-task data, so it also yields
+    a vector of task IDs with every sample."""
+
+    # TODO: replace all uses of trajectories_to_loader with this. No sense
+    # having two things that do the same thing.
+
+    cpu_dev = torch.device("cpu")
+
+    # create some numeric task IDs
+    env_names = sorted(demo_trajs_by_env.keys())
+    env_ids = torch.arange(len(env_names), device=cpu_dev)
+    np_env_ids = env_ids.numpy()
+    env_name_to_id = dict(zip(env_names, np_env_ids))
+    env_id_to_name = dict(zip(np_env_ids, env_names))
+
+    # make big list of trajectories in a deterministic order
+    all_obs = []
+    all_acts = []
+    all_ids = []
+    for env_name, env_id in sorted(env_name_to_id.items()):
+        demo_trajs = demo_trajs_by_env[env_name]
+        for traj in demo_trajs:
+            all_obs.append(torch.as_tensor(traj.obs[:-1], device=cpu_dev))
+            all_acts.append(torch.as_tensor(traj.acts, device=cpu_dev))
+            id_tensor = torch.full((len(traj.acts), ),
+                                   env_id,
+                                   dtype=torch.long)
+            all_ids.append(id_tensor)
+
+    # join together trajectories into Torch dataset
+    all_obs = torch.cat(all_obs)
+    all_acts = torch.cat(all_acts)
+    all_ids = torch.cat(all_ids)
+    dataset = data.TensorDataset(all_ids, all_obs, all_acts)
+
+    loader = data.DataLoader(dataset,
+                             batch_size=batch_size,
+                             pin_memory=False,
+                             shuffle=True,
+                             drop_last=True)
+
+    return loader, env_name_to_id, env_id_to_name
 
 
 class MILBenchTrajInfo(AttrDict):

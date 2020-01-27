@@ -1,4 +1,4 @@
-"""Single-task behavioural cloning (BC)."""
+"""Single-task Behavioural Cloning (BC)."""
 import os
 
 import click
@@ -15,8 +15,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from mtil.common import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
-                         VanillaGymEnv, make_logger_ctx, set_seeds,
+from mtil.common import (MILBenchFeatureNetwork, MILBenchGymEnv,
+                         MILBenchPreprocLayer, make_logger_ctx, set_seeds,
                          trajectories_to_loader)
 
 
@@ -89,6 +89,8 @@ def eval_model(sampler, n_traj=10):
 
 
 def do_epoch_training(loader, model, opt, dev):
+    # TODO: replace this with do_epoch_training_mt from mtbc.py
+
     # @torch.jit.script
     def do_loss_forward_back(obs_batch, acts_batch):
         logits_flat = model(obs_batch)
@@ -128,6 +130,8 @@ def do_epoch_training(loader, model, opt, dev):
 def do_epoch_eval(model, sampler, fake_agent_model, eval_n_traj):
     # end-of-epoch evaluation
     model.eval()
+    # TODO: change this so that it just removes the irrelevant key prefix from
+    # the normal model state dict. Too much messing around otherwise.
     sampler.agent.load_state_dict(fake_agent_model.state_dict())
     scores = eval_model(sampler, n_traj=eval_n_traj)
     return scores
@@ -172,7 +176,11 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
 
     # load demos (this code copied from bc.py in original baselines)
     demo_dicts = load_demos(demos)
-    orig_env_name = demo_dicts[0]['env_name']
+    all_names = set(d['env_name'] for d in demo_dicts)
+    if len(all_names) != 1:
+        raise ValueError(f"Supplied demos seem to come from {len(all_names)} "
+                         f"envs, rather than 1. Names: {sorted(all_names)}")
+    orig_env_name = next(iter(all_names))
     if add_preproc:
         env_name = splice_in_preproc_name(orig_env_name, add_preproc)
         print(f"Splicing preprocessor '{add_preproc}' into environment "
@@ -186,7 +194,7 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     loader = trajectories_to_loader(demo_trajs, batch_size)
 
     # local copy of Gym env, w/ args to create equivalent env in the sampler
-    env_ctor = VanillaGymEnv
+    env_ctor = MILBenchGymEnv
     env_ctor_kwargs = dict(env_name=env_name)
     env = gym.make(env_name)
     max_steps = env.spec.max_episode_steps
@@ -211,7 +219,7 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     sampler = SerialSampler(env_ctor,
                             env_ctor_kwargs,
                             batch_T=max_steps,
-                            max_decorrelation_steps=0,
+                            max_decorrelation_steps=max_steps,
                             batch_B=min(eval_n_traj, batch_size))
     agent = CategoricalPgAgent(ModelCls=AgentModelWrapper,
                                model_kwargs=dict(model_ctor=model_ctor,
