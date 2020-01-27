@@ -1,6 +1,7 @@
 """Main entry point for GAIL algorithm. Separated from actual implementation so
 that parts of the implementation can be pickled."""
 import multiprocessing as mp
+import readline  # noqa: F401
 
 import click
 from milbench.baselines.saved_trajectories import (
