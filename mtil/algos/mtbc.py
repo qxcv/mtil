@@ -304,7 +304,7 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
         samplers.append(env_sampler)
         agents.append(env_agent)
 
-    model_mt = MultiHeadPolicyNet(**model_kwargs)
+    model_mt = MultiHeadPolicyNet(**model_kwargs).to(dev)
     opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
 
     n_uniq_envs = len(orig_names_uniq)
