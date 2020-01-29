@@ -1,4 +1,6 @@
 import os
+import sys
+import time
 
 import click
 import gym
@@ -50,8 +52,8 @@ def cli():
     default=1,
     help="num training passes through full dataset between evaluations")
 @click.argument("demos", nargs=-1, required=True)
-def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
-         run_name, gpu_idx, eval_n_traj, passes_per_eval):
+def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
+          run_name, gpu_idx, eval_n_traj, passes_per_eval):
     # TODO: abstract this setup code (roughly: everything up to
     # 'trajectories_to_loader()') so that I don't have to keep rewriting it for
     # every IL method.
@@ -193,5 +195,110 @@ def main(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
                 })
 
 
+@cli.command()
+@click.option("--env-name",
+              default="MoveToCorner-Demo-LoResStack-v0",
+              help="name of env to get policy for")
+@click.option("--transfer-to",
+              default=None,
+              help="optionally specify a different env name to instantiate")
+@click.option("--det-pol/--no-det-pol",
+              default=False,
+              help="should actions be sampled deterministically?")
+# @click.option("--use-gpu/--no-use-gpu", default=False, help="use GPU")
+# @click.option("--gpu-idx", default=0, help="index of GPU to use")
+@click.option("--seed", default=42, help="PRNG seed")
+@click.option("--fps",
+              default=None,
+              type=int,
+              help="force frames per second to this value instead of default")
+@click.argument('state_dict_or_model_path')
+def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
+    set_seeds(seed)
+
+    import milbench
+    milbench.register_envs()
+
+    # build env
+    if transfer_to:
+        env = gym.make(transfer_to)
+    else:
+        env = gym.make(env_name)
+
+    state_dict_or_model_path = os.path.abspath(state_dict_or_model_path)
+    cpu_dev = torch.device('cpu')
+    state_dict_or_model = torch.load(state_dict_or_model_path,
+                                     map_location=cpu_dev)
+    if not isinstance(state_dict_or_model, dict):
+        print(f"Treating supplied path '{state_dict_or_model_path}' as "
+              f"policy (type {type(state_dict_or_model)})")
+        model = state_dict_or_model
+    else:
+        state_dict = state_dict_or_model['model_state']
+        state_dict_dir = os.path.dirname(state_dict_or_model_path)
+        # we save full model once at beginning of training so that we have
+        # architecture saved; not sure how to support loading arbitrary models
+        fm_path = os.path.join(state_dict_dir, 'full_model.pt')
+        print(f"Treating supplied path '{state_dict_or_model_path}' as "
+              f"state dict to insert into model at '{fm_path}'")
+        model = torch.load(fm_path, map_location=cpu_dev)
+        model.load_state_dict(state_dict)
+
+    # contra its name, .env_ids_and_names is list of tuples of form
+    # (environment name, numeric environment ID)
+    env_name_to_id = dict(model.env_ids_and_names)
+    if env_name not in env_name_to_id:
+        env_names = ', '.join(
+            [f'{name} ({eid})' for name, eid in model.env_ids_and_names])
+        raise ValueError(
+            f"Supplied environment name '{env_name}' is not supported by "
+            f"model. Supported names (& IDs) are: {env_names}")
+    env_id = env_name_to_id[env_name]
+    # this returns (pi, v)
+    ft_wrapper = FixedTaskModelWrapper(task_id=env_id,
+                                       model_ctor=None,
+                                       model_kwargs=None,
+                                       model=model)
+
+    spf = 1.0 / (env.fps if fps is None else fps)
+    act_range = np.arange(env.action_space.n)
+    obs = env.reset()
+    try:
+        while env.viewer.isopen:
+            # for limiting FPS
+            frame_start = time.time()
+            # return value is actions, values, states, neglogp
+            torch_obs = torch.from_numpy(obs)
+            with torch.no_grad():
+                (pi_torch, ), _ = ft_wrapper(torch_obs[None], None, None)
+                pi = pi_torch.cpu().numpy()
+            if det_pol:
+                action = np.argmax(pi)
+            else:
+                # numpy is super complain-y about things "not summing to 1"
+                pi = pi / sum(pi)
+                action = np.random.choice(act_range, p=pi)
+            obs, rew, done, info = env.step(action)
+            obs = np.asarray(obs)
+            env.render(mode='human')
+            if done:
+                print(f"Done, score {info['eval_score']:.4g}/1.0")
+                obs = env.reset()
+            elapsed = time.time() - frame_start
+            if elapsed < spf:
+                time.sleep(spf - elapsed)
+    finally:
+        env.viewer.close()
+
+
 if __name__ == '__main__':
-    main()
+    try:
+        with cli.make_context(sys.argv[0], sys.argv[1:]) as ctx:
+            result = cli.invoke(ctx)
+    except click.ClickException as e:
+        e.show()
+        sys.exit(e.exit_code)
+    except click.exceptions.Exit as e:
+        if e.exit_code == 0:
+            sys.exit(e.exit_code)
+        raise
