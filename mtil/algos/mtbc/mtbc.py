@@ -130,8 +130,8 @@ def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval):
     loss_ewma = None
     losses = []
     per_task_losses = collections.defaultdict(lambda: [])
-    progress = ProgBarCounter(len(loader))
-    for _ in range(passes_per_eval):
+    progress = ProgBarCounter(len(loader) * passes_per_eval)
+    for pass_num in range(passes_per_eval):
         for batches_done, (task_ids_batch, obs_batch, acts_batch) \
                 in enumerate(loader, start=1):
             # copy to GPU
@@ -147,7 +147,7 @@ def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval):
 
             # for logging
 
-            progress.update(batches_done)
+            progress.update(batches_done + len(loader) * pass_num)
             f_loss = np.mean(batch_losses)
             loss_ewma = f_loss if loss_ewma is None \
                 else 0.9 * loss_ewma + 0.1 * f_loss
