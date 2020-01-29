@@ -166,8 +166,10 @@ def trajectories_to_loader_mt(demo_trajs_by_env, batch_size):
     all_obs = []
     all_acts = []
     all_ids = []
+    all_weights = []
     for env_name, env_id in sorted(env_name_to_id.items()):
         demo_trajs = demo_trajs_by_env[env_name]
+        n_samples = 0
         for traj in demo_trajs:
             all_obs.append(torch.as_tensor(traj.obs[:-1], device=cpu_dev))
             all_acts.append(torch.as_tensor(traj.acts, device=cpu_dev))
@@ -175,18 +177,35 @@ def trajectories_to_loader_mt(demo_trajs_by_env, batch_size):
                                    env_id,
                                    dtype=torch.long)
             all_ids.append(id_tensor)
+            n_samples += len(id_tensor)
+
+        # weight things inversely proportional to their frequency
+        assert n_samples > 0, demo_trajs
+        weight_tensor = torch.full((n_samples, ),
+                                   1 / n_samples,
+                                   dtype=torch.float)
+        all_weights.append(weight_tensor)
 
     # join together trajectories into Torch dataset
     all_obs = torch.cat(all_obs)
     all_acts = torch.cat(all_acts)
     all_ids = torch.cat(all_ids)
+    all_weights = torch.cat(all_weights)
     dataset = data.TensorDataset(all_ids, all_obs, all_acts)
 
+    # construct sampler that randomly chooses N items from N-sample dataset,
+    # but "rigged" so that it's even across all tasks (so no task implicitly
+    # has higher priority than the others)
+    weighted_sampler = data.WeightedRandomSampler(all_weights,
+                                                  len(all_weights),
+                                                  replacement=True)
+    batch_sampler = data.BatchSampler(weighted_sampler,
+                                      batch_size=batch_size,
+                                      drop_last=True)
+
     loader = data.DataLoader(dataset,
-                             batch_size=batch_size,
                              pin_memory=False,
-                             shuffle=True,
-                             drop_last=True)
+                             batch_sampler=batch_sampler)
 
     return loader, env_name_to_id, env_id_to_name
 
