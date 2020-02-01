@@ -6,6 +6,7 @@ import click
 import gym
 from milbench.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
+from milbench.evaluation import EvaluationProtocol, latexify_results
 import numpy as np
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.samplers.serial.sampler import SerialSampler
@@ -18,6 +19,54 @@ from mtil.algos.mtbc.mtbc import (FixedTaskModelWrapper, MultiHeadPolicyNet,
                                   do_epoch_training_mt, make_env_tag)
 from mtil.common import (MILBenchGymEnv, make_logger_ctx, set_seeds,
                          trajectories_to_loader_mt)
+
+
+def load_state_dict_or_model(state_dict_or_model_path):
+    """Load a model from a path to either a state dict or a full PyTorch model.
+    If it's just a state dict path then the corresponding model path will be
+    inferred (assuming the state dict was produced by `train`). This is useful
+    for the `test` and `testall` commands."""
+    state_dict_or_model_path = os.path.abspath(state_dict_or_model_path)
+    cpu_dev = torch.device('cpu')
+    state_dict_or_model = torch.load(state_dict_or_model_path,
+                                     map_location=cpu_dev)
+    if not isinstance(state_dict_or_model, dict):
+        print(f"Treating supplied path '{state_dict_or_model_path}' as "
+              f"policy (type {type(state_dict_or_model)})")
+        model = state_dict_or_model
+    else:
+        state_dict = state_dict_or_model['model_state']
+        state_dict_dir = os.path.dirname(state_dict_or_model_path)
+        # we save full model once at beginning of training so that we have
+        # architecture saved; not sure how to support loading arbitrary models
+        fm_path = os.path.join(state_dict_dir, 'full_model.pt')
+        print(f"Treating supplied path '{state_dict_or_model_path}' as "
+              f"state dict to insert into model at '{fm_path}'")
+        model = torch.load(fm_path, map_location=cpu_dev)
+        model.load_state_dict(state_dict)
+
+    return model
+
+
+def wrap_model_for_fixed_task(model, env_name):
+    """Wrap a loaded multi-task model in a `FixedTaskModelWrapper` that _only_
+    uses the weights for the given env. Useful for `test` and `testall`."""
+    # contra its name, .env_ids_and_names is list of tuples of form
+    # (environment name, numeric environment ID)
+    env_name_to_id = dict(model.env_ids_and_names)
+    if env_name not in env_name_to_id:
+        env_names = ', '.join(
+            [f'{name} ({eid})' for name, eid in model.env_ids_and_names])
+        raise ValueError(
+            f"Supplied environment name '{env_name}' is not supported by "
+            f"model. Supported names (& IDs) are: {env_names}")
+    env_id = env_name_to_id[env_name]
+    # this returns (pi, v)
+    ft_wrapper = FixedTaskModelWrapper(task_id=env_id,
+                                       model_ctor=None,
+                                       model_kwargs=None,
+                                       model=model)
+    return ft_wrapper
 
 
 @click.group()
@@ -214,6 +263,8 @@ def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
               help="force frames per second to this value instead of default")
 @click.argument('state_dict_or_model_path')
 def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
+    """Repeatedly roll out a policy on a given environment. Mostly useful for
+    visual debugging; see `testall` for quantitative evaluation."""
     set_seeds(seed)
 
     import milbench
@@ -225,40 +276,8 @@ def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
     else:
         env = gym.make(env_name)
 
-    state_dict_or_model_path = os.path.abspath(state_dict_or_model_path)
-    cpu_dev = torch.device('cpu')
-    state_dict_or_model = torch.load(state_dict_or_model_path,
-                                     map_location=cpu_dev)
-    if not isinstance(state_dict_or_model, dict):
-        print(f"Treating supplied path '{state_dict_or_model_path}' as "
-              f"policy (type {type(state_dict_or_model)})")
-        model = state_dict_or_model
-    else:
-        state_dict = state_dict_or_model['model_state']
-        state_dict_dir = os.path.dirname(state_dict_or_model_path)
-        # we save full model once at beginning of training so that we have
-        # architecture saved; not sure how to support loading arbitrary models
-        fm_path = os.path.join(state_dict_dir, 'full_model.pt')
-        print(f"Treating supplied path '{state_dict_or_model_path}' as "
-              f"state dict to insert into model at '{fm_path}'")
-        model = torch.load(fm_path, map_location=cpu_dev)
-        model.load_state_dict(state_dict)
-
-    # contra its name, .env_ids_and_names is list of tuples of form
-    # (environment name, numeric environment ID)
-    env_name_to_id = dict(model.env_ids_and_names)
-    if env_name not in env_name_to_id:
-        env_names = ', '.join(
-            [f'{name} ({eid})' for name, eid in model.env_ids_and_names])
-        raise ValueError(
-            f"Supplied environment name '{env_name}' is not supported by "
-            f"model. Supported names (& IDs) are: {env_names}")
-    env_id = env_name_to_id[env_name]
-    # this returns (pi, v)
-    ft_wrapper = FixedTaskModelWrapper(task_id=env_id,
-                                       model_ctor=None,
-                                       model_kwargs=None,
-                                       model=model)
+    model = load_state_dict_or_model(state_dict_or_model_path)
+    ft_wrapper = wrap_model_for_fixed_task(model, env_name)
 
     spf = 1.0 / (env.fps if fps is None else fps)
     act_range = np.arange(env.action_space.n)
@@ -289,6 +308,116 @@ def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
                 time.sleep(spf - elapsed)
     finally:
         env.viewer.close()
+
+
+class MTBCEvalProtocol(EvaluationProtocol):
+    def __init__(self, ft_wrapper, run_id, seed, det_pol, **kwargs):
+        super().__init__(**kwargs)
+        self.ft_wrapper = ft_wrapper
+        self._run_id = run_id
+        self.seed = seed
+        self.det_pol = det_pol
+
+    @property
+    def run_id(self):
+        return self._run_id
+
+    def obtain_scores(self, env_name):
+        print(f"Testing on {env_name}")
+
+        env = gym.make(env_name)
+        # use same seed for each instantiated test env (maybe this is a bad
+        # idea? IDK.)
+        rng = np.random.RandomState(self.seed)
+        env.seed(rng.randint(0, 1 << 31 - 1))
+        # alternative:
+        # env_hash_digest = hashlib.md5(env_name.encode('utf8')).digest()
+        # env_seed = struct.unpack('>I', env_hash_digest[:4])
+        # env.seed(self.seed ^ env_seed)
+
+        scores = []
+        for _ in range(self.n_rollouts):
+            act_range = np.arange(env.action_space.n)
+            obs = env.reset()
+            done = False
+            while not done:
+                torch_obs = torch.from_numpy(obs)
+                with torch.no_grad():
+                    (pi_torch, ), _ = self.ft_wrapper(torch_obs[None], None,
+                                                      None)
+                    pi = pi_torch.cpu().numpy()
+                if self.det_pol:
+                    action = np.argmax(pi)
+                else:
+                    pi = pi / sum(pi)
+                    action = rng.choice(act_range, p=pi)
+                obs, rew, done, info = env.step(action)
+                obs = np.asarray(obs)
+                if done:
+                    scores.append(info['eval_score'])
+
+        env.close()
+
+        return scores
+
+
+@cli.command()
+@click.option("--env-name",
+              default="MoveToCorner-Demo-LoResStack-v0",
+              help="name of env to get policy for")
+@click.option("--det-pol/--no-det-pol",
+              default=False,
+              help="should actions be sampled deterministically?")
+# @click.option("--use-gpu/--no-use-gpu", default=False, help="use GPU")
+# @click.option("--gpu-idx", default=0, help="index of GPU to use")
+@click.option("--seed", default=42, help="PRNG seed")
+@click.option("--fps",
+              default=None,
+              type=int,
+              help="force frames per second to this value instead of default")
+@click.option("--write-latex",
+              default=None,
+              help="write LaTeX table to this file")
+@click.option("--latex-alg-name",
+              default="UNK",
+              help="algorithm name for LaTeX")
+@click.option("--n-rollouts",
+              default=10,
+              help="number of rollouts to execute in each test config")
+@click.argument('state_dict_or_model_path')
+def testall(state_dict_or_model_path, env_name, det_pol, seed, fps,
+            write_latex, latex_alg_name, n_rollouts):
+    """Run quantitative evaluation on all test variants of a given
+    environment."""
+    # TODO: is there some way of factoring this init code out? Maybe put into
+    # Click base command so that it gets run for `train`, `testall`, etc.
+    set_seeds(seed)
+    import milbench
+    milbench.register_envs()
+
+    model = load_state_dict_or_model(state_dict_or_model_path)
+    ft_wrapper = wrap_model_for_fixed_task(model, env_name)
+
+    eval_protocol = MTBCEvalProtocol(ft_wrapper=ft_wrapper,
+                                     seed=seed,
+                                     det_pol=det_pol,
+                                     run_id=state_dict_or_model_path,
+                                     demo_env_name=env_name,
+                                     n_rollouts=n_rollouts)
+
+    # next bit copied from testall() in bc.py
+    frame = eval_protocol.do_eval(verbose=True)
+    frame['latex_alg_name'] = latex_alg_name
+
+    if write_latex:
+        latex_str = latexify_results(frame, id_column='latex_alg_name')
+        dir_path = os.path.dirname(write_latex)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        with open(write_latex, 'w') as fp:
+            fp.write(latex_str)
+
+    return frame
 
 
 if __name__ == '__main__':
