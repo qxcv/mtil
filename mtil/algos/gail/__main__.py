@@ -5,7 +5,7 @@ import multiprocessing as mp
 # rl_initialize when importing readline. Problematic import is
 # 'milbench.baselines.saved_trajectories' (putting this import after that means
 # the segfault still happens). Haven't had time to chase down.
-import readline
+import readline  # noqa: F401
 
 import click
 from milbench.baselines.saved_trajectories import (
