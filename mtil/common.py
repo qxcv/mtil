@@ -109,13 +109,14 @@ def make_logger_ctx(out_dir,
                     algo,
                     orig_env_name,
                     custom_run_name=None,
+                    snapshot_gap=10,
                     **kwargs):
     # for logging & model-saving
     if custom_run_name is None:
         run_name = make_unique_run_name(algo, orig_env_name)
     else:
         run_name = custom_run_name
-    logger.set_snapshot_gap(10)
+    logger.set_snapshot_gap(snapshot_gap)
     log_dir = os.path.abspath(out_dir)
     # this is irrelevant so long as it's a prefix of log_dir
     log_ctx.LOG_DIR = log_dir

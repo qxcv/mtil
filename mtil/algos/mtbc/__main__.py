@@ -100,9 +100,13 @@ def cli():
     "--passes-per-eval",
     default=1,
     help="num training passes through full dataset between evaluations")
+@click.option(
+    "--snapshot-gap",
+    default=10,
+    help="how many evals to wait for before saving snapshot")
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
-          run_name, gpu_idx, eval_n_traj, passes_per_eval):
+          run_name, gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap):
     # TODO: abstract this setup code (roughly: everything up to
     # 'trajectories_to_loader()') so that I don't have to keep rewriting it for
     # every IL method.
@@ -201,7 +205,8 @@ def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
 
     n_uniq_envs = len(orig_names_uniq)
-    with make_logger_ctx(out_dir, "mtbc", f"mt{n_uniq_envs}", run_name):
+    with make_logger_ctx(out_dir, "mtbc", f"mt{n_uniq_envs}", run_name,
+                         snapshot_gap=snapshot_gap):
         # initial save
         torch.save(model_mt,
                    os.path.join(logger.get_snapshot_dir(), 'full_model.pt'))
