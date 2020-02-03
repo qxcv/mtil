@@ -100,10 +100,9 @@ def cli():
     "--passes-per-eval",
     default=1,
     help="num training passes through full dataset between evaluations")
-@click.option(
-    "--snapshot-gap",
-    default=10,
-    help="how many evals to wait for before saving snapshot")
+@click.option("--snapshot-gap",
+              default=10,
+              help="how many evals to wait for before saving snapshot")
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
           run_name, gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap):
@@ -205,7 +204,10 @@ def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
 
     n_uniq_envs = len(orig_names_uniq)
-    with make_logger_ctx(out_dir, "mtbc", f"mt{n_uniq_envs}", run_name,
+    with make_logger_ctx(out_dir,
+                         "mtbc",
+                         f"mt{n_uniq_envs}",
+                         run_name,
                          snapshot_gap=snapshot_gap):
         # initial save
         torch.save(model_mt,
@@ -383,15 +385,23 @@ class MTBCEvalProtocol(EvaluationProtocol):
 @click.option("--write-latex",
               default=None,
               help="write LaTeX table to this file")
+@click.option("--run-id",
+              default=None,
+              type=str,
+              help="override default run identifier in Pandas frame")
+@click.option("--write-csv",
+              default=None,
+              type=str,
+              help="write Pandas frame to this file as CSV")
 @click.option("--latex-alg-name",
-              default="UNK",
+              default=None,
               help="algorithm name for LaTeX")
 @click.option("--n-rollouts",
               default=10,
               help="number of rollouts to execute in each test config")
 @click.argument('state_dict_or_model_path')
 def testall(state_dict_or_model_path, env_name, det_pol, seed, fps,
-            write_latex, latex_alg_name, n_rollouts):
+            write_latex, latex_alg_name, n_rollouts, run_id, write_csv):
     """Run quantitative evaluation on all test variants of a given
     environment."""
     # TODO: is there some way of factoring this init code out? Maybe put into
@@ -403,15 +413,20 @@ def testall(state_dict_or_model_path, env_name, det_pol, seed, fps,
     model = load_state_dict_or_model(state_dict_or_model_path)
     ft_wrapper = wrap_model_for_fixed_task(model, env_name)
 
+    if run_id is None:
+        run_id = state_dict_or_model_path
+
     eval_protocol = MTBCEvalProtocol(ft_wrapper=ft_wrapper,
                                      seed=seed,
                                      det_pol=det_pol,
-                                     run_id=state_dict_or_model_path,
+                                     run_id=run_id,
                                      demo_env_name=env_name,
                                      n_rollouts=n_rollouts)
 
     # next bit copied from testall() in bc.py
     frame = eval_protocol.do_eval(verbose=True)
+    if latex_alg_name is None:
+        latex_alg_name = run_id
     frame['latex_alg_name'] = latex_alg_name
 
     if write_latex:
@@ -421,6 +436,12 @@ def testall(state_dict_or_model_path, env_name, det_pol, seed, fps,
             os.makedirs(dir_path, exist_ok=True)
         with open(write_latex, 'w') as fp:
             fp.write(latex_str)
+
+    if write_csv:
+        dir_path = os.path.dirname(write_csv)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        frame.to_csv(write_csv)
 
     return frame
 
