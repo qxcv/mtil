@@ -263,10 +263,10 @@ class GAILOptimiser:
             #
             # Hence GAIL is like "reverse logistic regression" where you label
             # expert demonstrations as 0 and fake (novice) demonstrations as 1,
-            # then flip the sign of the loss. I have no idea why they write it
-            # out that way.
-            loss = -F.binary_cross_entropy_with_logits(
-                logits, 1 - is_real_label, reduction='mean')
+            # then flip the sign of the loss. I doubt that part of their
+            # algorithm is necessary, so I've just done things the normal way.
+            loss = F.binary_cross_entropy_with_logits(
+                logits, is_real_label, reduction='mean')
             loss.backward()
             self.opt.step()
 

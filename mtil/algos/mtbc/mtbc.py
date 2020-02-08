@@ -30,12 +30,12 @@ class MultiHeadPolicyNet(nn.Module):
         self.feature_extractor = MILBenchFeatureNetwork(
             in_chans=in_chans, ActivationCls=ActivationCls)
         self.fc_postproc = nn.Sequential(
-            nn.Linear(1024, 256),
+            nn.Linear(1024, fc_dim),
             ActivationCls(),
-            # now: flat 256-elem vector
-            nn.Linear(256, fc_dim),
+            # now: flat <fc_dim>-elem vector
+            nn.Linear(fc_dim, fc_dim),
             ActivationCls(),
-            # now: flat 256-elem vector
+            # now: flat <fc_dim>-elem vector
         )
         # these "embeddings" are actually affine transformation parameters,
         # with weight matrix at the beginning and bias at the end
