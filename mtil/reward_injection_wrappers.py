@@ -21,6 +21,7 @@ than PG. Some notes:
 
 from collections import namedtuple
 
+import numpy as np
 from rlpyt.algos.pg.a2c import A2C
 from rlpyt.algos.pg.ppo import PPO
 import torch
@@ -28,6 +29,41 @@ import torch
 # ################# #
 # For PG algorithms #
 # ################# #
+
+
+class _RunningMeanVariance:
+    """Exponentially-weighted running mean and variance, for reward
+    normalisation."""
+    def __init__(self, shape, discount=0.98):
+        assert isinstance(shape, tuple)
+        self._shape = shape
+        self._fo = np.zeros(shape)
+        self._so = np.zeros(shape)
+        self.discount = discount
+        self._n_updates = 0
+
+    @property
+    def mean(self):
+        # bias correction like Adam
+        ub_fo = self._fo / (1 - self.discount ** self._n_updates)
+        return ub_fo
+
+    @property
+    def std(self):
+        # same bias correction
+        ub_fo = self.mean
+        ub_so = self._so / (1 - self.discount ** self._n_updates)
+        return np.sqrt(ub_so - ub_fo ** 2)
+
+    def update(self, new_values):
+        new_values = np.asarray(new_values)
+        assert len(new_values) >= 1
+        assert new_values[0].shape == self._shape
+        nv_mean = np.mean(new_values, axis=0)
+        nv_sq_mean = np.mean(new_values ** 2, axis=0)
+        self._fo = self.discount * self._fo + (1 - self.discount) * nv_mean
+        self._so = self.discount * self._so + (1 - self.discount) * nv_sq_mean
+        self._n_updates += 1
 
 
 class CustomRewardMixinPg:
@@ -42,6 +78,10 @@ class CustomRewardMixinPg:
     # _custom_logging_fields is used by GAILMinibatchRl (also also be
     # optimize_agent())
     _custom_logging_fields = ('synthRew', 'synthRet', 'synthAdv')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._rew_running_average = _RunningMeanVariance((), discount=0.98)
 
     def set_reward_model(self, reward_model):
         self._reward_model = reward_model
@@ -63,6 +103,13 @@ class CustomRewardMixinPg:
             new_reward = dev_reward.to(old_dev)
         if old_training:
             self._reward_model.train(old_training)
+
+        # normalise
+        # TODO: this logic should be put in self._reward_model, not here
+        self._rew_running_average.update(new_reward.flatten())
+        mu = self._rew_running_average.mean.item()
+        std = self._rew_running_average.std.item()
+        new_reward = (new_reward - mu) / max(std, 1e-3)
 
         new_samples = samples._replace(env=samples.env._replace(
             reward=new_reward))
