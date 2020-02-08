@@ -259,7 +259,8 @@ class GAILOptimiser:
             #
             # binary_cross_entropy_with_logits computes -labels *
             # log(sigmoid(logits)) - (1 - labels) * log(1-sigmoid(logits)) (per
-            # PyTorch docs).
+            # PyTorch docs). In other words:
+            #   -y * log D(s,a) - (1 - y) * log(1 - D(s, a))
             #
             # Hence GAIL is like "reverse logistic regression" where you label
             # expert demonstrations as 0 and fake (novice) demonstrations as 1,
@@ -319,4 +320,5 @@ class GAILMinibatchRl(MinibatchRl):
     def initialize_logging(self):
         super().initialize_logging()
         # make sure that logger knows how to handle GAIL info tuples, too
-        self._opt_infos.update({field: [] for field in GAILInfo._fields})
+        new_fields = GAILInfo._fields + self.algo._custom_logging_fields
+        self._opt_infos.update({field: [] for field in new_fields})

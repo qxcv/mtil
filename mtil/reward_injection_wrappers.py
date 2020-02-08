@@ -19,11 +19,10 @@ than PG. Some notes:
   I'll definitely need my own code if I want to display both eval_score and the
   learnt reward."""
 
+from collections import namedtuple
+
 from rlpyt.algos.pg.a2c import A2C
 from rlpyt.algos.pg.ppo import PPO
-from rlpyt.algos.utils import (discount_return,
-                               generalized_advantage_estimation,
-                               valid_from_done)
 import torch
 
 # ################# #
@@ -32,64 +31,84 @@ import torch
 
 
 class CustomRewardMixinPg:
-    reward_model = None
+    # filled in by set_reward_model()
+    _reward_model = None
+    # filled in by set_reward_model()
+    _dev = None
+    # filled in by process_returns()
+    _last_rew_ret_adv = None
+    # filled in by optimize_agent()
+    _RRAInfo = None
+    # _custom_logging_fields is used by GAILMinibatchRl (also also be
+    # optimize_agent())
+    _custom_logging_fields = ('synthRew', 'synthRet', 'synthAdv')
 
     def set_reward_model(self, reward_model):
-        self.reward_model = reward_model
+        self._reward_model = reward_model
+        self._dev = next(iter(reward_model.parameters())).device
 
     def process_returns(self, samples):
-        # TODO: shorten this by just manipulating samples directly & then
-        # passing it to super().process_returns() (want to make sure I don't
-        # modify the samples in-place, which will be annoying)
+        # inject custom reward into samples
         assert self._reward_model is not None, \
             "must call .set_reward_model() on algorithm before continuing"
-        # rest copied from rlpyt/algos/pg/base.py (but with reward modified)
-        _, done, value, bv = (samples.env.reward, samples.env.done,
-                              samples.agent.agent_info.value,
-                              samples.agent.bootstrap_value)
 
         old_training = self._reward_model.training
         if old_training:
             self._reward_model.eval()
         with torch.no_grad():
-            # TODO: is this reward even the right shape?
-            reward = self._reward_model(samples.env.obs, samples.env.action)
+            old_dev = samples.env.observation.device
+            dev_obs = samples.env.observation.to(self._dev)
+            dev_acts = samples.agent.action.to(self._dev)
+            dev_reward = self._reward_model(dev_obs, dev_acts)
+            new_reward = dev_reward.to(old_dev)
         if old_training:
             self._reward_model.train(old_training)
 
-        done = done.type(reward.dtype)
+        new_samples = samples._replace(env=samples.env._replace(
+            reward=new_reward))
 
-        if self.gae_lambda == 1:  # GAE reduces to empirical discounted.
-            return_ = discount_return(reward, done, bv, self.discount)
-            advantage = return_ - value
-        else:
-            advantage, return_ = generalized_advantage_estimation(
-                reward, value, done, bv, self.discount, self.gae_lambda)
+        # actually do return/advantage calculations
+        return_, advantage, valid = super().process_returns(new_samples)
 
-        if not self.mid_batch_reset or self.agent.recurrent:
-            valid = valid_from_done(
-                done)  # Recurrent: no reset during training.
-        else:
-            valid = None  # OR torch.ones_like(done)
-
-        if self.normalize_advantage:
-            if valid is not None:
-                valid_mask = valid > 0
-                adv_mean = advantage[valid_mask].mean()
-                adv_std = advantage[valid_mask].std()
-            else:
-                adv_mean = advantage.mean()
-                adv_std = advantage.std()
-            advantage[:] = (advantage - adv_mean) / max(adv_std, 1e-6)
+        # record old reward, return, and advantage so that we can log stats
+        # later
+        self._last_rew_ret_adv = (new_reward, return_, advantage)
 
         return return_, advantage, valid
 
+    @staticmethod
+    def _to_cpu_list(t):
+        # rlpyt logging code only pays attention to lists of numbers, so if I
+        # want my synthetic reward etc. to be logged then I need to put it here
+        return list(t.detach().cpu().flatten().numpy())
 
-class CustomRewardPPO(PPO, CustomRewardMixinPg):
+    def optimize_agent(self, itr, samples):
+        # slightly hacky, but whatever
+        opt_info = super().optimize_agent(itr, samples)
+
+        # log extra data
+        if self._RRAInfo is None:
+            old_fields = opt_info._fields
+            all_fields = [*old_fields, *self._custom_logging_fields]
+            self._RRAInfo = namedtuple('_RRAInfo', all_fields)
+        rew, ret, adv = self._last_rew_ret_adv
+        rra_info = self._RRAInfo(**opt_info._asdict(),
+                                 synthRew=self._to_cpu_list(rew),
+                                 synthRet=self._to_cpu_list(ret),
+                                 synthAdv=self._to_cpu_list(adv))
+
+        # being defensive: I want to see exception if we try to unpack the same
+        # thing twice
+        self._last_rew_ret_adv = None
+
+        return rra_info
+
+
+class CustomRewardPPO(CustomRewardMixinPg, PPO):
     pass
 
 
-class CustomRewardA2C(A2C, CustomRewardMixinPg):
+class CustomRewardA2C(CustomRewardMixinPg, A2C):
     pass
 
 
