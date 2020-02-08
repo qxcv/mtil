@@ -112,6 +112,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         demo_trajs = preprocess_demos_with_wrapper(demo_trajs, orig_env_name,
                                                    add_preproc)
 
+    print("Getting env metadata")
     # local copy of Gym env, w/ args to create equivalent env in the sampler
     env_ctor = MILBenchGymEnv
     env_ctor_kwargs = dict(env_name=env_name)
@@ -121,6 +122,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
     batch_T = n_steps_per_iter
     batch_B = n_envs
 
+    print("Setting up sampler")
     if use_gpu:
         sampler_ctor = GpuSampler
     else:
@@ -134,6 +136,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         batch_T=batch_T,
         batch_B=batch_B)
 
+    print("Setting up agent")
     # should be (H,W,C) even w/ frame stack
     assert len(env_meta.observation_space.shape) == 3, \
         env_meta.observation_space.shape
@@ -143,6 +146,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
                                    model_kwargs=dict(in_chans=in_chans,
                                                      n_actions=n_actions))
 
+    print("Setting up discriminator/reward model")
     discriminator = MILBenchDiscriminator(
             in_chans=in_chans, act_dim=n_actions).to(dev)
     reward_model = RewardModel(discriminator).to(dev)
@@ -153,6 +157,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
     ppo_algo = CustomRewardPPO()
     ppo_algo.set_reward_model(reward_model)
 
+    print("Setting up optimiser")
     gail_optim = GAILOptimiser(
         expert_trajectories=demo_trajs,
         discrim_model=discriminator,
@@ -164,6 +169,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         updates_per_itr=disc_up_per_itr,
         dev=dev)
 
+    print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards
     runner = GAILMinibatchRl(
         gail_optim=gail_optim,
@@ -179,6 +185,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         log_interval_steps=log_interval_steps,
         affinity=affinity)
 
+    print("Training!")
     with make_logger_ctx(out_dir, "gail", orig_env_name, run_name):
         runner.train()
 
