@@ -81,7 +81,7 @@ class CustomRewardMixinPg:
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._rew_running_average = _RunningMeanVariance((), discount=0.98)
+        self._rew_running_average = _RunningMeanVariance((), discount=0.9)
 
     def set_reward_model(self, reward_model):
         self._reward_model = reward_model
@@ -109,7 +109,7 @@ class CustomRewardMixinPg:
         self._rew_running_average.update(new_reward.flatten())
         mu = self._rew_running_average.mean.item()
         std = self._rew_running_average.std.item()
-        new_reward = (new_reward - mu) / max(std, 1e-3)
+        new_reward = (new_reward - mu) / max(10 * std, 1e-3)
 
         new_samples = samples._replace(env=samples.env._replace(
             reward=new_reward))

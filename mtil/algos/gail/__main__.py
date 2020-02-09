@@ -56,7 +56,7 @@ def cli():
 @click.option("--disc-batch-size",
               default=32,
               help="batch size for discriminator training")
-@click.option("--disc-up-per-itr",
+@click.option("--disc-up-per-iter",
               default=1,
               help="number of discriminator steps per RL step")
 @click.option("--total-n-steps",
@@ -72,7 +72,7 @@ def cli():
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
          disc_batch_size, epochs, out_dir, run_name, gpu_idx, eval_n_traj,
-         disc_up_per_itr, total_n_steps, log_interval_steps, n_workers):
+         disc_up_per_iter, total_n_steps, log_interval_steps, n_workers):
     # set up seeds & devices
     set_seeds(seed)
     # 'spawn' is necessary to use GL envs in subprocesses. For whatever reason
@@ -154,7 +154,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
     # should have with sampler batch size
     # TODO: also consider adding a BC loss to the policy (this will have to be
     # PPO-specific though)
-    ppo_algo = CustomRewardPPO()
+    ppo_algo = CustomRewardPPO(normalize_advantage=True)
     ppo_algo.set_reward_model(reward_model)
 
     print("Setting up optimiser")
@@ -166,7 +166,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         # sampler
         max(batch_B, disc_batch_size),
         batch_size=disc_batch_size,
-        updates_per_itr=disc_up_per_itr,
+        updates_per_itr=disc_up_per_iter,
         dev=dev)
 
     print("Setting up RL algorithm")
