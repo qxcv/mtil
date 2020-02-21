@@ -4,8 +4,6 @@ import time
 
 import click
 import gym
-from milbench.baselines.saved_trajectories import (
-    load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 from milbench.evaluation import EvaluationProtocol, latexify_results
 import numpy as np
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
@@ -13,60 +11,16 @@ from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.utils.logging import logger
 import torch
 
+# TODO: move this into mtbc.py, then delete bc.py and run `vulture` to catch
+# any newly-useless code.
 from mtil.algos.bc import eval_model
-from mtil.algos.mtbc.mtbc import (FixedTaskModelWrapper, MultiHeadPolicyNet,
-                                  copy_model_into_sampler,
-                                  do_epoch_training_mt, make_env_tag)
-from mtil.common import (MILBenchGymEnv, make_logger_ctx, set_seeds,
-                         trajectories_to_loader_mt)
-
-
-def load_state_dict_or_model(state_dict_or_model_path):
-    """Load a model from a path to either a state dict or a full PyTorch model.
-    If it's just a state dict path then the corresponding model path will be
-    inferred (assuming the state dict was produced by `train`). This is useful
-    for the `test` and `testall` commands."""
-    state_dict_or_model_path = os.path.abspath(state_dict_or_model_path)
-    cpu_dev = torch.device('cpu')
-    state_dict_or_model = torch.load(state_dict_or_model_path,
-                                     map_location=cpu_dev)
-    if not isinstance(state_dict_or_model, dict):
-        print(f"Treating supplied path '{state_dict_or_model_path}' as "
-              f"policy (type {type(state_dict_or_model)})")
-        model = state_dict_or_model
-    else:
-        state_dict = state_dict_or_model['model_state']
-        state_dict_dir = os.path.dirname(state_dict_or_model_path)
-        # we save full model once at beginning of training so that we have
-        # architecture saved; not sure how to support loading arbitrary models
-        fm_path = os.path.join(state_dict_dir, 'full_model.pt')
-        print(f"Treating supplied path '{state_dict_or_model_path}' as "
-              f"state dict to insert into model at '{fm_path}'")
-        model = torch.load(fm_path, map_location=cpu_dev)
-        model.load_state_dict(state_dict)
-
-    return model
-
-
-def wrap_model_for_fixed_task(model, env_name):
-    """Wrap a loaded multi-task model in a `FixedTaskModelWrapper` that _only_
-    uses the weights for the given env. Useful for `test` and `testall`."""
-    # contra its name, .env_ids_and_names is list of tuples of form
-    # (environment name, numeric environment ID)
-    env_name_to_id = dict(model.env_ids_and_names)
-    if env_name not in env_name_to_id:
-        env_names = ', '.join(
-            [f'{name} ({eid})' for name, eid in model.env_ids_and_names])
-        raise ValueError(
-            f"Supplied environment name '{env_name}' is not supported by "
-            f"model. Supported names (& IDs) are: {env_names}")
-    env_id = env_name_to_id[env_name]
-    # this returns (pi, v)
-    ft_wrapper = FixedTaskModelWrapper(task_id=env_id,
-                                       model_ctor=None,
-                                       model_kwargs=None,
-                                       model=model)
-    return ft_wrapper
+from mtil.algos.mtbc.mtbc import (copy_model_into_sampler,
+                                  do_epoch_training_mt,
+                                  load_state_dict_or_model, make_env_tag,
+                                  wrap_model_for_fixed_task)
+from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
+                         MultiHeadPolicyNet, load_demos_mt, make_loader_mt,
+                         make_logger_ctx, set_seeds)
 
 
 @click.group()
@@ -74,16 +28,15 @@ def cli():
     pass
 
 
-# TODO: abstract all these options out into a common set of options, possibly
-# by using Sacred
+# TODO: abstract some of these options according to the logical role they play
+# (perhaps by using Sacred).
 @cli.command()
 @click.option(
     "--add-preproc",
     default="LoResStack",
     type=str,
     help="add preprocessor to the demos and test env (default: 'LoResStack')")
-@click.option("--use-gpu/--no-use-gpu", default=False, help="use GPU")
-@click.option("--gpu-idx", default=0, help="index of GPU to use")
+@click.option("--gpu-idx", default=None, help="index of GPU to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
 @click.option("--epochs", default=100, help="epochs of training to perform")
@@ -104,15 +57,17 @@ def cli():
               default=10,
               help="how many evals to wait for before saving snapshot")
 @click.argument("demos", nargs=-1, required=True)
-def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
-          run_name, gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap):
-    # TODO: abstract this setup code (roughly: everything up to
-    # 'trajectories_to_loader()') so that I don't have to keep rewriting it for
-    # every IL method.
+def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
+          gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap):
+    # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
+    # setup should go in another function (or maybe the same function). Dataset
+    # loading should be simplified by having a single class that can provide
+    # whatever form of data the current IL method needs, without having to do
+    # unnecessary copies in memory.
 
     # set up seeds & devices
     set_seeds(seed)
-    use_gpu = use_gpu and torch.cuda.is_available()
+    use_gpu = gpu_idx is not None and torch.cuda.is_available()
     dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
     print(f"Using device {dev}, seed {seed}")
 
@@ -120,38 +75,12 @@ def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     import milbench
     milbench.register_envs()
 
-    # load demos (this code copied from bc.py in original baselines)
-    demo_dicts = load_demos(demos)
-    orig_env_names = [d['env_name'] for d in demo_dicts]
-    orig_names_uniq = sorted(set(orig_env_names))
-    if add_preproc:
-        env_names = [
-            splice_in_preproc_name(orig_env_name, add_preproc)
-            for orig_env_name in orig_env_names
-        ]
-        print(f"Splicing preprocessor '{add_preproc}' into environments "
-              f"{orig_names_uniq}. New names are {sorted(set(env_names))}")
-    else:
-        env_names = orig_env_names
-    # pair of (original name, name with preprocessor spliced in)
-    name_pairs = sorted(set(zip(orig_env_names, env_names)))
-    demo_trajs_by_env = {
-        env_name: [
-            demo_dict['trajectory'] for demo_dict in demo_dicts
-            if demo_dict['env_name'] == orig_env_name
-        ]
-        for orig_env_name, env_name in name_pairs
-    }
-    assert sum(map(len, demo_trajs_by_env.values())) == len(demo_dicts)
-    if add_preproc:
-        demo_trajs_by_env = {
-            env_name:
-            preprocess_demos_with_wrapper(demo_trajs_by_env[env_name],
-                                          orig_env_name, add_preproc)
-            for orig_env_name, env_name in name_pairs
-        }
-    loader_mt, env_name_to_id, env_id_to_name = trajectories_to_loader_mt(
-        demo_trajs_by_env, batch_size)
+    # TODO: maybe make this a class so that I don't have to pass around a
+    # zillion attrs and use ~5 lines just to load some demos?
+    dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
+        = load_demos_mt(demos, add_preproc)
+    loader_mt = make_loader_mt(dataset_mt, batch_size)
+
     dataset_len = len(loader_mt)
     env_ids_and_names = [(name, env_name_to_id[name])
                          for _, name in name_pairs]
@@ -203,7 +132,7 @@ def train(demos, use_gpu, add_preproc, seed, batch_size, epochs, out_dir,
     model_mt = MultiHeadPolicyNet(**model_kwargs).to(dev)
     opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
 
-    n_uniq_envs = len(orig_names_uniq)
+    n_uniq_envs = len(env_ids_and_names)
     with make_logger_ctx(out_dir,
                          "mtbc",
                          f"mt{n_uniq_envs}",

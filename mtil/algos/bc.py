@@ -10,14 +10,13 @@ from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.utils.logging import logger
 from rlpyt.utils.prog_bar import ProgBarCounter
-from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 from torch import nn
 import torch.nn.functional as F
 
-from mtil.common import (MILBenchFeatureNetwork, MILBenchGymEnv,
-                         MILBenchPreprocLayer, make_logger_ctx, set_seeds,
-                         trajectories_to_loader)
+from mtil.common import (AgentModelWrapper, MILBenchFeatureNetwork,
+                         MILBenchGymEnv, MILBenchPreprocLayer, make_logger_ctx,
+                         set_seeds, trajectories_to_loader)
 
 
 class MILBenchPolicyNet(nn.Module):
@@ -49,30 +48,6 @@ class MILBenchPolicyNet(nn.Module):
         features = self.feature_extractor(preproc)
         logits = self.logit_generator(features)
         return logits
-
-
-class AgentModelWrapper(nn.Module):
-    """Wraps a normal (observation -> logits) feedforward network so that (1)
-    it deals gracefully with the variable-dimensional inputs that the rlpyt
-    sampler gives it, (2) it produces action probabilities instead of logits,
-    and (3) it produces some value 'values' to keep CategoricalPgAgent
-    happy."""
-    def __init__(self, model_ctor, model_kwargs, model=None):
-        super().__init__()
-        if model is not None:
-            self.model = model
-        else:
-            self.model = model_ctor(**model_kwargs)
-
-    def forward(self, obs, prev_act, prev_rew):
-        # copied from AtariFfModel, then modified to match own situation
-        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)
-        logits = self.model(obs.view(T * B, *img_shape))
-        pi = F.softmax(logits, dim=-1)
-        # fake values (BC doesn't use them)
-        v = torch.zeros((T * B, ), device=pi.device, dtype=pi.dtype)
-        pi, v = restore_leading_dims((pi, v), lead_dim, T, B)
-        return pi, v
 
 
 def eval_model(sampler, n_traj=10):

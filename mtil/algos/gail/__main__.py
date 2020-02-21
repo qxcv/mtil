@@ -1,25 +1,26 @@
 """Main entry point for GAIL algorithm. Separated from actual implementation so
 that parts of the implementation can be pickled."""
-import multiprocessing as mp
+
 # 'import readline' is necessary to stop pdb.set_trace() from segfaulting in
 # rl_initialize when importing readline. Problematic import is
 # 'milbench.baselines.saved_trajectories' (putting this import after that means
 # the segfault still happens). Haven't had time to chase down.
+import multiprocessing as mp
+import os
 import readline  # noqa: F401
 
 import click
-from milbench.baselines.saved_trajectories import (
-    load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.samplers.parallel.cpu.sampler import CpuSampler
 from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
+from rlpyt.utils.logging import logger
 import torch
 
 from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
-                                  MILBenchDiscriminator,
-                                  MILBenchPolicyValueNetwork, RewardModel)
-from mtil.common import (MILBenchGymEnv, MILBenchTrajInfo, get_env_meta,
-                         make_logger_ctx, sane_click_init, set_seeds)
+                                  MILBenchDiscriminator, RewardModel)
+from mtil.common import (MILBenchGymEnv, MILBenchTrajInfo, MultiHeadPolicyNet,
+                         get_env_meta, load_demos_mt, make_logger_ctx,
+                         sane_click_init, set_seeds, FixedTaskModelWrapper)
 from mtil.reward_injection_wrappers import CustomRewardPPO
 
 
@@ -34,7 +35,6 @@ def cli():
     default="LoResStack",
     type=str,
     help="add preprocessor to the demos and test env (default: 'LoResStack')")
-@click.option("--use-gpu/--no-use-gpu", default=False, help="use GPU")
 @click.option("--gpu-idx", default=0, help="index of GPU to use")
 @click.option("--n-workers",
               default=None,
@@ -69,17 +69,18 @@ def cli():
               default=None,
               type=str,
               help="unique name for this run")
+@click.option("--snapshot-gap", default=10, help="evals between snapshots")
 @click.argument("demos", nargs=-1, required=True)
-def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
-         disc_batch_size, epochs, out_dir, run_name, gpu_idx, eval_n_traj,
-         disc_up_per_iter, total_n_steps, log_interval_steps, n_workers):
+def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
+         epochs, out_dir, run_name, gpu_idx, eval_n_traj, disc_up_per_iter,
+         total_n_steps, log_interval_steps, n_workers, snapshot_gap):
     # set up seeds & devices
     set_seeds(seed)
     # 'spawn' is necessary to use GL envs in subprocesses. For whatever reason
     # they don't play nice after a fork. (But what about set_seeds() in
     # subprocesses? May need to hack CpuSampler and GpuSampler.)
     mp.set_start_method('spawn')
-    use_gpu = use_gpu and torch.cuda.is_available()
+    use_gpu = gpu_idx is not None and torch.cuda.is_available()
     dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
     cpu_count = mp.cpu_count()
     n_workers = max(1, cpu_count // 2) if n_workers is None else n_workers
@@ -99,18 +100,14 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
     milbench.register_envs()
 
     # load demos (this code copied from bc.py in original baselines)
-    demo_dicts = load_demos(demos)
-    orig_env_name = demo_dicts[0]['env_name']
-    if add_preproc:
-        env_name = splice_in_preproc_name(orig_env_name, add_preproc)
-        print(f"Splicing preprocessor '{add_preproc}' into environment "
-              f"'{orig_env_name}'. New environment is {env_name}")
-    else:
-        env_name = orig_env_name
-    demo_trajs = [d['trajectory'] for d in demo_dicts]
-    if add_preproc:
-        demo_trajs = preprocess_demos_with_wrapper(demo_trajs, orig_env_name,
-                                                   add_preproc)
+    dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
+        = load_demos_mt(demos, add_preproc)
+    # loader_mt = make_loader_mt(dataset_mt, disc_batch_size // 2)
+    env_ids_and_names = [(name, env_name_to_id[name])
+                         for _, name in name_pairs]
+    assert len(env_ids_and_names) == 1, \
+        "GAIL doesn't support multi-task training yet"
+    (env_name, env_id), = env_ids_and_names
 
     print("Getting env metadata")
     # local copy of Gym env, w/ args to create equivalent env in the sampler
@@ -142,13 +139,19 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         env_meta.observation_space.shape
     in_chans = env_meta.observation_space.shape[-1]
     n_actions = env_meta.action_space.n  # categorical action space
-    ppo_agent = CategoricalPgAgent(ModelCls=MILBenchPolicyValueNetwork,
-                                   model_kwargs=dict(in_chans=in_chans,
-                                                     n_actions=n_actions))
+    model_ctor = MultiHeadPolicyNet
+    model_kwargs = dict(in_chans=in_chans,
+                        n_actions=n_actions,
+                        env_ids_and_names=env_ids_and_names)
+    ppo_agent = CategoricalPgAgent(ModelCls=FixedTaskModelWrapper,
+                                   model_kwargs=dict(
+                                       model_ctor=model_ctor,
+                                       task_id=env_id,
+                                       model_kwargs=model_kwargs))
 
     print("Setting up discriminator/reward model")
-    discriminator = MILBenchDiscriminator(
-            in_chans=in_chans, act_dim=n_actions).to(dev)
+    discriminator = MILBenchDiscriminator(in_chans=in_chans,
+                                          act_dim=n_actions).to(dev)
     reward_model = RewardModel(discriminator).to(dev)
     # TODO: figure out what pol_batch_size should be/do, and what relation it
     # should have with sampler batch size
@@ -159,7 +162,7 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
 
     print("Setting up optimiser")
     gail_optim = GAILOptimiser(
-        expert_trajectories=demo_trajs,
+        dataset_mt=dataset_mt,
         discrim_model=discriminator,
         buffer_num_samples=batch_T *
         # TODO: also update this once you've figured out what arg to give to
@@ -185,9 +188,37 @@ def main(demos, use_gpu, add_preproc, seed, n_envs, n_steps_per_iter,
         log_interval_steps=log_interval_steps,
         affinity=affinity)
 
+    def save_model_cb(runner):
+        """Callback which gets called once after Runner startup to save an
+        initial policy model."""
+        # get state of newly-initalised model
+        wrapped_model = runner.algo.agent.model
+        assert wrapped_model is not None, "has ppo_agent been initalised?"
+        unwrapped_model = wrapped_model.model
+        real_state = unwrapped_model.state_dict()
+
+        # make a clone model so we can pickle it, and copy across weights
+        policy_copy_mt = model_ctor(**model_kwargs).to('cpu')
+        policy_copy_mt.load_state_dict(real_state)
+
+        # save it here
+        init_pol_snapshot_path = os.path.join(logger.get_snapshot_dir(),
+                                              'full_model.pt')
+        torch.save(policy_copy_mt, init_pol_snapshot_path)
+
     print("Training!")
-    with make_logger_ctx(out_dir, "gail", orig_env_name, run_name):
-        runner.train()
+    n_uniq_envs = len(env_ids_and_names)
+    with make_logger_ctx(out_dir,
+                         "gail",
+                         f"mt{n_uniq_envs}",
+                         run_name,
+                         snapshot_gap=snapshot_gap):
+        torch.save(
+            discriminator,
+            os.path.join(logger.get_snapshot_dir(), 'full_discrim_model.pt'))
+        # note that periodic snapshots get saved by GAILMiniBatchRl, thanks to
+        # the overridden get_itr_snapshot() method
+        runner.train(cb_startup=save_model_cb)
 
 
 if __name__ == '__main__':

@@ -14,7 +14,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from mtil.common import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
-                         trajectories_to_loader)
+                         make_loader_mt)
 
 DiscrimReplaySamples = namedarraytuple("DiscrimReplaySamples",
                                        ["all_observation", "all_action"])
@@ -125,41 +125,6 @@ class RewardModel(nn.Module):
         return rewards
 
 
-class MILBenchPolicyValueNetwork(nn.Module):
-    def __init__(self, in_chans, n_actions, ActivationCls=torch.nn.ReLU):
-        super().__init__()
-        self.preproc = MILBenchPreprocLayer()
-        # feature extractor gives us 1024-dim features
-        self.feature_extractor = MILBenchFeatureNetwork(
-            in_chans=in_chans, ActivationCls=ActivationCls)
-        # we then post-process those features with two FC layers
-        self.feature_generator = nn.Sequential(
-            nn.Linear(1024, 256),
-            ActivationCls(),
-            # now: flat 256-elem vector
-            nn.Linear(256, 256),
-            ActivationCls(),
-            # finally: flat 256-elem vector
-        )
-        # finally, we add policy and value heads
-        self.policy_head = nn.Linear(256, n_actions)
-        self.value_head = nn.Linear(256, 1)
-
-    def forward(self, obs, prev_act=None, prev_rew=None):
-        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)
-
-        obs_preproc = self.preproc(obs.view((T * B, *img_shape)))
-        obs_features = self.feature_extractor(obs_preproc)
-        flat_features = self.feature_generator(obs_features)
-        pi_logits = self.policy_head(flat_features)
-        pi = F.softmax(pi_logits, dim=-1)
-        v = self.value_head(flat_features).squeeze(-1)
-
-        pi, v = restore_leading_dims((pi, v), lead_dim, T, B)
-
-        return pi, v
-
-
 GAILInfo = namedtuple(
     'GAILInfo',
     [
@@ -197,7 +162,7 @@ def _compute_gail_stats(disc_logits, is_real_labels):
 
 
 class GAILOptimiser:
-    def __init__(self, expert_trajectories, discrim_model, buffer_num_samples,
+    def __init__(self, dataset_mt, discrim_model, buffer_num_samples,
                  batch_size, updates_per_itr, dev):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
@@ -206,8 +171,7 @@ class GAILOptimiser:
         self.buffer_num_samples = buffer_num_samples
         self.updates_per_itr = updates_per_itr
         self.dev = dev
-        self.expert_traj_loader = trajectories_to_loader(
-            expert_trajectories, batch_size=batch_size // 2)
+        self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
         self.expert_batch_iter = itertools.chain.from_iterable(
             itertools.repeat(self.expert_traj_loader))
         self.opt = torch.optim.Adam(self.model.parameters(), lr=1e-3)
@@ -227,7 +191,7 @@ class GAILOptimiser:
         for _ in range(self.updates_per_itr):
             self.opt.zero_grad()
 
-            expert_obs, expert_acts = next(self.expert_batch_iter)
+            task_ids, expert_obs, expert_acts = next(self.expert_batch_iter)
             # grep for SamplesFromReplay to see what fields pol_replay_samples
             # has
             pol_replay_samples = self.pol_replay_buffer.sample_batch(
@@ -266,8 +230,9 @@ class GAILOptimiser:
             # expert demonstrations as 0 and fake (novice) demonstrations as 1,
             # then flip the sign of the loss. I doubt that part of their
             # algorithm is necessary, so I've just done things the normal way.
-            loss = F.binary_cross_entropy_with_logits(
-                logits, is_real_label, reduction='mean')
+            loss = F.binary_cross_entropy_with_logits(logits,
+                                                      is_real_label,
+                                                      reduction='mean')
             loss.backward()
             self.opt.step()
 
@@ -293,9 +258,12 @@ class GAILMinibatchRl(MinibatchRl):
         self.gail_optim = gail_optim
         self.joint_info_cls = None
 
-    def train(self):
+    def train(self, cb_startup=None):
         # copied from MinibatchRl.train() & extended to support GAIL update
         n_itr = self.startup()
+        if cb_startup:
+            # post-startup callback (cb)
+            cb_startup(self)
         for itr in range(n_itr):
             with logger.prefix(f"itr #{itr} "):
                 self.agent.sample_mode(
@@ -316,6 +284,14 @@ class GAILMinibatchRl(MinibatchRl):
                 if (itr + 1) % self.log_interval_itrs == 0:
                     self.log_diagnostics(itr)
         self.shutdown()
+
+    def get_itr_snapshot(self, itr):
+        snap_dict = super().get_itr_snapshot(itr)
+        # this will only work with PPO & my hacky GAIL thing (ugh, inelegant)
+        real_model = self.algo.agent.model.model
+        assert 'model_state' not in snap_dict, snap_dict.keys()
+        snap_dict['model_state'] = real_model.state_dict()
+        return snap_dict
 
     def initialize_logging(self):
         super().initialize_logging()

@@ -105,11 +105,16 @@ class CustomRewardMixinPg:
             self._reward_model.train(old_training)
 
         # normalise
-        # TODO: this logic should be put in self._reward_model, not here
+        # TODO: this normalisation logic should be put in self._reward_model or
+        # in an env wrapper, not here
         self._rew_running_average.update(new_reward.flatten())
         mu = self._rew_running_average.mean.item()
         std = self._rew_running_average.std.item()
         new_reward = (new_reward - mu) / max(10 * std, 1e-3)
+
+        old_reward = samples.env.reward
+        assert new_reward.shape == old_reward.shape, \
+            (new_reward.shape, old_reward.shape)
 
         new_samples = samples._replace(env=samples.env._replace(
             reward=new_reward))

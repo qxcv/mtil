@@ -11,13 +11,17 @@ import uuid
 import click
 import gym
 from milbench import register_envs
+from milbench.baselines.saved_trajectories import (
+    load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 import numpy as np
 from rlpyt.envs.gym import GymEnvWrapper
 from rlpyt.utils.collections import AttrDict
 from rlpyt.utils.logging import context as log_ctx
 from rlpyt.utils.logging import logger
+from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.utils import data
 
 
@@ -82,6 +86,153 @@ class MILBenchFeatureNetwork(nn.Module):
         return flat_feats
 
 
+class MultiTaskAffineLayer(nn.Module):
+    """A multi-task version of torch.nn.Linear. It keeps a separate set of
+    weights for each of `n_tasks` tasks. On the forward pass, it takes a batch
+    of task IDs in addition to a batch of feature inputs, and uses those to
+    look up the appropriate affine transform to apply to each batch element."""
+    def __init__(self, in_chans, out_chans, n_tasks):
+        super().__init__()
+
+        # these "embeddings" are actually affine transformation parameters,
+        # with weight matrix at the beginning and bias at the end
+        self._embedding_shapes = [(out_chans, in_chans), (out_chans, )]
+        self._embedding_sizes = [
+            np.prod(shape) for shape in self._embedding_shapes
+        ]
+        full_embed_size = sum(self._embedding_sizes)
+        self.task_embeddings = nn.Embedding(n_tasks, full_embed_size)
+
+    def _retrieve_embeddings(self, task_ids):
+        embeddings = self.task_embeddings(task_ids)
+        stops = list(np.cumsum(self._embedding_sizes))
+        starts = [0] + stops[:-1]
+        reshaped = []
+        for start, stop, shape in zip(starts, stops, self._embedding_shapes):
+            full_shape = embeddings.shape[:-1] + shape
+            part = embeddings[..., start:stop].view(full_shape)
+            reshaped.append(part)
+        return reshaped
+
+    def forward(self, inputs, task_ids):
+        # messy: must reshape "embeddings" into weight matrices & affine
+        # parameters, then apply them like a batch of different affine layers
+        matrices, biases \
+            = self._retrieve_embeddings(task_ids)
+        bc_fc_features = inputs[..., None]
+        mm_result = torch.squeeze(matrices @ bc_fc_features, dim=-1)
+        assert mm_result.shape == biases.shape, \
+            (mm_result.shape, biases.shape)
+        result = mm_result + biases
+
+        return result
+
+
+class MultiHeadPolicyNet(nn.Module):
+    """Like MILBenchPolicyNet in bc.py, but for multitask policies with one
+    head per environment. Returns both logits and values, for use in algorithms
+    other than BC."""
+    def __init__(self,
+                 env_ids_and_names,
+                 in_chans=3,
+                 n_actions=3 * 3 * 2,
+                 fc_dim=256,
+                 ActivationCls=torch.nn.ReLU):
+        super().__init__()
+        self.preproc = MILBenchPreprocLayer()
+        self.feature_extractor = MILBenchFeatureNetwork(
+            in_chans=in_chans, ActivationCls=ActivationCls)
+        self.fc_postproc = nn.Sequential(
+            nn.Linear(1024, fc_dim),
+            ActivationCls(),
+            # now: flat <fc_dim>-elem vector
+            nn.Linear(fc_dim, fc_dim),
+            ActivationCls(),
+            # now: flat <fc_dim>-elem vector
+        )
+        # this produces both a single value output and a vector of policy
+        # logits for each sample
+        self.mt_fc_layer = MultiTaskAffineLayer(fc_dim, n_actions + 1,
+                                                len(env_ids_and_names))
+
+        # save env IDs and names so that we know how to reconstruct, as well as
+        # fc_dim and n_actionsso that we can do reshaping
+        self.env_ids_and_names = sorted(env_ids_and_names)
+        self.fc_dim = fc_dim
+        self.n_actions = n_actions
+
+    def forward(self, obs, task_ids=None):
+        if task_ids is None:
+            # if the task is unambiguous, then it's fine not to pass IDs
+            n_tasks = len(self.env_ids_and_names)
+            assert n_tasks == 1, \
+                "no task_ids given, but have {n_tasks} tasks to choose from"
+            task_ids = obs.new_zeros(obs.shape[1:], dtype=torch.long)
+
+        preproc = self.preproc(obs)
+        features = self.feature_extractor(preproc)
+        fc_features = self.fc_postproc(features)
+        logits_and_values = self.mt_fc_layer(fc_features, task_ids)
+        logits = logits_and_values[..., :-1]
+        values = logits_and_values[..., -1]
+
+        l_expected_shape = task_ids.shape + (self.n_actions, )
+        assert logits.shape == l_expected_shape, \
+            f"expected logits to be shape {l_expected_shape}, but got " \
+            f"shape {logits.shape}"
+        assert values.shape == task_ids.shape, \
+            f"expected values to be shape {task_ids.shape}, but got " \
+            f"shape {values.shape}"
+
+        return logits, values
+
+
+class AgentModelWrapper(nn.Module):
+    """Wraps a normal (observation -> logits) feedforward network so that (1)
+    it deals gracefully with the variable-dimensional inputs that the rlpyt
+    sampler gives it, (2) it produces action probabilities instead of logits,
+    and (3) it produces some value 'values' to keep CategoricalPgAgent
+    happy."""
+    def __init__(self, model_ctor, model_kwargs, model=None):
+        super().__init__()
+        if model is not None:
+            self.model = model
+        else:
+            self.model = model_ctor(**model_kwargs)
+
+    def forward(self, obs, prev_act, prev_rew):
+        # copied from AtariFfModel, then modified to match own situation
+        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)
+        logits = self.model(obs.view(T * B, *img_shape))
+        pi = F.softmax(logits, dim=-1)
+        # fake values (BC doesn't use them)
+        v = torch.zeros((T * B, ), device=pi.device, dtype=pi.dtype)
+        pi, v = restore_leading_dims((pi, v), lead_dim, T, B)
+        return pi, v
+
+
+class FixedTaskModelWrapper(AgentModelWrapper):
+    """Like AgentModelWrapper, but for multi-head policies that expect task IDs
+    as input. Assumes that it is only ever getting applied to one task,
+    identified by a given integer `task_id`. Good when you have one sampler per
+    task."""
+    def __init__(self, task_id, **kwargs):
+        # This should be given 'model_ctor', 'model_kwargs', and optionally
+        # 'model' kwargs.
+        super().__init__(**kwargs)
+        self.task_id = task_id
+
+    def forward(self, obs, prev_act, prev_rew):
+        # similar to AgentModelWrapper.forward(), but also constructs task IDs
+        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)
+        task_ids = torch.full((T * B, ), self.task_id, dtype=torch.long) \
+            .to(obs.device)
+        logits, v = self.model(obs.view(T * B, *img_shape), task_ids)
+        pi = F.softmax(logits, dim=-1)
+        pi, v = restore_leading_dims((pi, v), lead_dim, T, B)
+        return pi, v
+
+
 class MILBenchGymEnv(GymEnvWrapper):
     """Useful for constructing rlpyt environments from Gym environment names
     (as needed to, e.g., create agents/samplers/etc.). Will automatically
@@ -132,6 +283,7 @@ def trajectories_to_loader(demo_trajs, batch_size):
     """Re-format demonstration trajectories as a Torch DataLoader."""
     # convert dataset to Torch (always stored on CPU; we'll move one batch at a
     # time to the GPU)
+    # FIXME: remove this once you've either deleted bc.py or rewritten it.
     cpu_dev = torch.device("cpu")
     all_obs = torch.cat([
         torch.as_tensor(traj.obs[:-1], device=cpu_dev) for traj in demo_trajs
@@ -147,7 +299,7 @@ def trajectories_to_loader(demo_trajs, batch_size):
     return loader
 
 
-def trajectories_to_loader_mt(demo_trajs_by_env, batch_size):
+def trajectories_to_dataset_mt(demo_trajs_by_env):
     """Like trajectories_to_loader, but for multi-task data, so it also yields
     a vector of task IDs with every sample."""
 
@@ -167,7 +319,6 @@ def trajectories_to_loader_mt(demo_trajs_by_env, batch_size):
     all_obs = []
     all_acts = []
     all_ids = []
-    all_weights = []
     for env_name, env_id in sorted(env_name_to_id.items()):
         demo_trajs = demo_trajs_by_env[env_name]
         n_samples = 0
@@ -182,23 +333,32 @@ def trajectories_to_loader_mt(demo_trajs_by_env, batch_size):
 
         # weight things inversely proportional to their frequency
         assert n_samples > 0, demo_trajs
-        weight_tensor = torch.full((n_samples, ),
-                                   1 / n_samples,
-                                   dtype=torch.float)
-        all_weights.append(weight_tensor)
 
     # join together trajectories into Torch dataset
     all_obs = torch.cat(all_obs)
     all_acts = torch.cat(all_acts)
     all_ids = torch.cat(all_ids)
-    all_weights = torch.cat(all_weights)
     dataset = data.TensorDataset(all_ids, all_obs, all_acts)
 
-    # construct sampler that randomly chooses N items from N-sample dataset,
-    # but "rigged" so that it's even across all tasks (so no task implicitly
-    # has higher priority than the others)
-    weighted_sampler = data.WeightedRandomSampler(all_weights,
-                                                  len(all_weights),
+    return dataset, env_name_to_id, env_id_to_name
+
+
+def make_loader_mt(dataset, batch_size):
+    """Construct sampler that randomly chooses N items from N-sample dataset,
+    weighted so that it's even across all tasks (so no task implicitly has
+    higher priority than the others). Assumes the given dataset is a
+    TensorDataset produced by trajectories_to_dataset_mt."""
+    task_ids = dataset.tensors[0]
+    unique_ids, frequencies = torch.unique(task_ids, return_counts=True,
+                                           sorted=True)
+    # all tasks must be present for this to work
+    assert torch.all(unique_ids == torch.arange(len(unique_ids))), (unique_ids)
+    freqs_total = torch.sum(frequencies).to(torch.float)
+    unique_weights = frequencies.to(torch.float) / freqs_total
+    weights = unique_weights[task_ids]
+
+    weighted_sampler = data.WeightedRandomSampler(weights,
+                                                  len(weights),
                                                   replacement=True)
     batch_sampler = data.BatchSampler(weighted_sampler,
                                       batch_size=batch_size,
@@ -208,7 +368,47 @@ def trajectories_to_loader_mt(demo_trajs_by_env, batch_size):
                              pin_memory=False,
                              batch_sampler=batch_sampler)
 
-    return loader, env_name_to_id, env_id_to_name
+    return loader
+
+
+# TODO: unify this, make_loader_mt, and trajectories_to_dataset_mt into one big
+# class.
+def load_demos_mt(demo_paths, add_preproc=None):
+    """Load multi-task demonstrations. Can apply any desired MILBench
+    preprocessor as needed."""
+    demo_dicts = load_demos(demo_paths)
+    orig_env_names = [d['env_name'] for d in demo_dicts]
+    orig_names_uniq = sorted(set(orig_env_names))
+    if add_preproc:
+        env_names = [
+            splice_in_preproc_name(orig_env_name, add_preproc)
+            for orig_env_name in orig_env_names
+        ]
+        print(f"Splicing preprocessor '{add_preproc}' into environments "
+              f"{orig_names_uniq}. New names are {sorted(set(env_names))}")
+    else:
+        env_names = orig_env_names
+    # pair of (original name, name with preprocessor spliced in)
+    name_pairs = sorted(set(zip(orig_env_names, env_names)))
+    demo_trajs_by_env = {
+        env_name: [
+            demo_dict['trajectory'] for demo_dict in demo_dicts
+            if demo_dict['env_name'] == orig_env_name
+        ]
+        for orig_env_name, env_name in name_pairs
+    }
+    assert sum(map(len, demo_trajs_by_env.values())) == len(demo_dicts)
+    if add_preproc:
+        demo_trajs_by_env = {
+            env_name:
+            preprocess_demos_with_wrapper(demo_trajs_by_env[env_name],
+                                          orig_env_name, add_preproc)
+            for orig_env_name, env_name in name_pairs
+        }
+    dataset_mt, env_name_to_id, env_id_to_name = trajectories_to_dataset_mt(
+        demo_trajs_by_env)
+
+    return dataset_mt, env_name_to_id, env_id_to_name, name_pairs
 
 
 class MILBenchTrajInfo(AttrDict):
@@ -280,7 +480,13 @@ def get_env_meta(env_name, ctx=multiprocessing):
     """Spawn a subprocess and use that to get metadata about an environment
     (env_spec, observation_space, action_space, etc.). Can optionally be passed
     a custom multiprocessing context to spawn subprocess with (e.g. so you can
-    use 'spawn' method rather than the default 'fork')."""
+    use 'spawn' method rather than the default 'fork').
+
+    This is useful for environments that pollute some global state of the
+    process which constructs them. For instance, the MILBench environments
+    create some X resources that cannot be forked gracefully. If you do fork
+    and then try to create a new env in the child, then you will end up with
+    inscrutable resource errors."""
     mgr = ctx.Manager()
     rv_dict = mgr.dict()
     proc = ctx.Process(target=_get_env_meta_target, args=(env_name, rv_dict))
