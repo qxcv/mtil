@@ -178,6 +178,16 @@ class GAILOptimiser:
         # we'll set this up on the first pass
         self.pol_replay_buffer = None
 
+    def state_dict(self):
+        return {
+            'disc_model_state': self.model.state_dict(),
+            'disc_opt_state': self.opt.state_dict(),
+        }
+
+    def load_state_dict(self, state_dict):
+        self.model.load_state_dict(state_dict['disc_model_state'])
+        self.opt.load_state_dict(state_dict['disc_opt_state'])
+
     def optim_disc(self, itr, samples):
         # store new samples in replay buffer
         if self.pol_replay_buffer is None:
@@ -287,11 +297,24 @@ class GAILMinibatchRl(MinibatchRl):
 
     def get_itr_snapshot(self, itr):
         snap_dict = super().get_itr_snapshot(itr)
-        # this will only work with PPO & my hacky GAIL thing (ugh, inelegant)
+
+        # Save policy model state directly so that mtbc.py can pick it up. This
+        # will only work with PPO & my hacky GAIL thing (ugh, inelegant).
         real_model = self.algo.agent.model.model
         assert 'model_state' not in snap_dict, snap_dict.keys()
-        snap_dict['model_state'] = real_model.state_dict()
-        return snap_dict
+
+        # Build full dict (also including discrim state)
+        new_dict = {
+            'model_state': real_model.state_dict(),
+            'disc_state': self.gail_optim.state_dict(),
+        }
+
+        # make sure we're not overwriting anything
+        assert not (new_dict.keys() & snap_dict.keys()), \
+            (new_dict.keys(), snap_dict.keys())
+        new_dict.update(snap_dict)
+
+        return new_dict
 
     def initialize_logging(self):
         super().initialize_logging()

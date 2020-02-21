@@ -45,8 +45,10 @@ def cli():
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
 @click.option(
     "--log-interval-steps",
-    default=1e5,
+    default=1e4,
     help="how many env transitions to take between writing log outputs")
+# FIXME: rename these --ppo-batch-b and --ppo-batch-t instead, since that's
+# really what they are.
 @click.option("--n-envs",
               default=16,
               help="number of parallel envs to sample from")
@@ -60,7 +62,7 @@ def cli():
               default=1,
               help="number of discriminator steps per RL step")
 @click.option("--total-n-steps",
-              default=1e6,
+              default=1e7,
               help="total number of steps to take in environment")
 @click.option("--eval-n-traj",
               default=10,
