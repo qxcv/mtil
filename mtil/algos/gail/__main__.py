@@ -157,7 +157,29 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
     # should have with sampler batch size
     # TODO: also consider adding a BC loss to the policy (this will have to be
     # PPO-specific though)
-    ppo_algo = CustomRewardPPO(normalize_advantage=True)
+
+    # Stable Baselines hyperparams:
+    # gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=0.00025,
+    # vf_coef=0.5, max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4,
+    # cliprange=0.2, cliprange_vf=None
+    #
+    # Default rlpyt hyperparams:
+    # discount=0.99, learning_rate=0.001, value_loss_coeff=1.0,
+    # entropy_loss_coeff=0.01, clip_grad_norm=1.0,
+    # initial_optim_state_dict=None, gae_lambda=1, minibatches=4, epochs=4,
+    # ratio_clip=0.1, linear_lr_schedule=True, normalize_advantage=False
+    #
+    # gae_lambda is probably doing a lot of work here, especially if we're
+    # using some funky way of computing return for our partial traces. I doubt
+    # value_loss_coeff and clip_grad_norm make much difference, since it's only
+    # a factor of 2 change. cliprange difference might matter, but IDK. n_steps
+    # will also matter a lot since it's so low by default in rlpyt (16).
+    extra_ppo_kwargs = dict(
+            learning_rate=0.00025,
+            value_loss_coeff=0.5,
+            clip_grad_norm=0.5,
+            gae_lambda=0.95)
+    ppo_algo = CustomRewardPPO(normalize_advantage=True, **extra_ppo_kwargs)
     ppo_algo.set_reward_model(reward_model)
 
     print("Setting up optimiser")
