@@ -141,3 +141,16 @@ def wrap_model_for_fixed_task(model, env_name):
                                        model_kwargs=None,
                                        model=model)
     return ft_wrapper
+
+
+def eval_model(sampler, n_traj=10):
+    scores = []
+    while len(scores) < n_traj:
+        # can't see an obvious purpose to the 'itr' argument, so setting it to
+        # None
+        samples_pyt, _ = sampler.obtain_samples(None)
+        eval_scores = samples_pyt.env.env_info.eval_score
+        dones = samples_pyt.env.done
+        done_scores = eval_scores.flatten()[dones.flatten()]
+        scores.extend(done_scores)
+    return scores

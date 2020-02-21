@@ -11,11 +11,8 @@ from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.utils.logging import logger
 import torch
 
-# TODO: move this into mtbc.py, then delete bc.py and run `vulture` to catch
-# any newly-useless code.
-from mtil.algos.bc import eval_model
 from mtil.algos.mtbc.mtbc import (copy_model_into_sampler,
-                                  do_epoch_training_mt,
+                                  do_epoch_training_mt, eval_model,
                                   load_state_dict_or_model, make_env_tag,
                                   wrap_model_for_fixed_task)
 from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,

@@ -279,32 +279,8 @@ def make_logger_ctx(out_dir,
                                   **kwargs)
 
 
-def trajectories_to_loader(demo_trajs, batch_size):
-    """Re-format demonstration trajectories as a Torch DataLoader."""
-    # convert dataset to Torch (always stored on CPU; we'll move one batch at a
-    # time to the GPU)
-    # FIXME: remove this once you've either deleted bc.py or rewritten it.
-    cpu_dev = torch.device("cpu")
-    all_obs = torch.cat([
-        torch.as_tensor(traj.obs[:-1], device=cpu_dev) for traj in demo_trajs
-    ])
-    all_acts = torch.cat(
-        [torch.as_tensor(traj.acts, device=cpu_dev) for traj in demo_trajs])
-    dataset = data.TensorDataset(all_obs, all_acts)
-    loader = data.DataLoader(dataset,
-                             batch_size=batch_size,
-                             pin_memory=False,
-                             shuffle=True,
-                             drop_last=True)
-    return loader
-
-
 def trajectories_to_dataset_mt(demo_trajs_by_env):
-    """Like trajectories_to_loader, but for multi-task data, so it also yields
-    a vector of task IDs with every sample."""
-
-    # TODO: replace all uses of trajectories_to_loader with this. No sense
-    # having two things that do the same thing.
+    """Re-format multi-task trajectories into a Torch dataset."""
 
     cpu_dev = torch.device("cpu")
 
