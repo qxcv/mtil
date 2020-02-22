@@ -54,13 +54,13 @@ def cli():
               default=16,
               help="number of parallel envs to sample from")
 @click.option("--n-steps-per-iter",
-              default=64,
+              default=128,
               help="number of timesteps to advance each env when sampling")
 @click.option("--disc-batch-size",
               default=32,
               help="batch size for discriminator training")
 @click.option("--disc-up-per-iter",
-              default=1,
+              default=4,
               help="number of discriminator steps per RL step")
 @click.option("--total-n-steps",
               default=1e7,
