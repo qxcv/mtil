@@ -581,3 +581,29 @@ def save_normalised_image_tensor(image_tensor, file_name):
         f"[{flat_tensor.min()}, {flat_tensor.max()}]"
     nrow = max(1, int(np.sqrt(flat_tensor.shape[0])))
     vutils.save_image(flat_tensor, file_name, nrow, range=(-1, 1))
+
+
+def mixup(*tensors, alpha=0.2):
+    """Copy of mixup implementation in Avi's code:
+
+    https://github.com/avisingh599/reward-learning-rl/blob/93bb52f75bea850bd01f3c3342539f0231a561f3/softlearning/misc/utils.py#L164-L175
+
+    This is not "real" mixup because it only mixes between elements of one
+    batch, so there will be some redundancy (and could even be duplicate
+    entries!). I expect it will work just as well though."""
+    dist = torch.distributions.Beta(alpha, alpha)
+    batch_size = tensors[0].shape[0]
+    coeffs = dist.sample((batch_size, ))
+    perm = torch.randperm(batch_size)
+
+    out_tensors = []
+    for in_tensor in tensors:
+        assert in_tensor.shape[0] == batch_size, (in_tensor.shape, batch_size)
+        perm_tensor = in_tensor[perm]
+        # make sure broadcasting works correctly by appending training "1" dims
+        bc_coeffs = coeffs.view((batch_size, ) + (1, ) *
+                                (len(in_tensor.shape) - 1))
+        result = bc_coeffs * in_tensor + (1 - bc_coeffs) * perm_tensor
+        out_tensors.append(result)
+
+    return tuple(out_tensors)
