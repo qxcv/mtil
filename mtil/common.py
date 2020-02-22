@@ -325,7 +325,8 @@ def make_loader_mt(dataset, batch_size):
     higher priority than the others). Assumes the given dataset is a
     TensorDataset produced by trajectories_to_dataset_mt."""
     task_ids = dataset.tensors[0]
-    unique_ids, frequencies = torch.unique(task_ids, return_counts=True,
+    unique_ids, frequencies = torch.unique(task_ids,
+                                           return_counts=True,
                                            sorted=True)
     # all tasks must be present for this to work
     assert torch.all(unique_ids == torch.arange(len(unique_ids))), (unique_ids)
@@ -479,7 +480,7 @@ def get_env_meta(env_name, ctx=multiprocessing):
     return result
 
 
-class RunningMeanVariance:
+class RunningMeanVarianceEWMA:
     """Running mean and variance. Intended for reward normalisation."""
     def __init__(self, shape, discount=0.98):
         assert isinstance(shape, tuple)
@@ -492,22 +493,71 @@ class RunningMeanVariance:
     @property
     def mean(self):
         # bias correction like Adam
-        ub_fo = self._fo / (1 - self.discount ** self._n_updates)
+        ub_fo = self._fo / (1 - self.discount**self._n_updates)
         return ub_fo
 
     @property
     def std(self):
         # same bias correction
         ub_fo = self.mean
-        ub_so = self._so / (1 - self.discount ** self._n_updates)
-        return np.sqrt(ub_so - ub_fo ** 2)
+        ub_so = self._so / (1 - self.discount**self._n_updates)
+        return np.sqrt(ub_so - ub_fo**2)
 
     def update(self, new_values):
         new_values = np.asarray(new_values)
         assert len(new_values) >= 1
         assert new_values[0].shape == self._shape
         nv_mean = np.mean(new_values, axis=0)
-        nv_sq_mean = np.mean(new_values ** 2, axis=0)
+        nv_sq_mean = np.mean(new_values**2, axis=0)
         self._fo = self.discount * self._fo + (1 - self.discount) * nv_mean
         self._so = self.discount * self._so + (1 - self.discount) * nv_sq_mean
         self._n_updates += 1
+
+
+class RunningMeanVariance:
+    """This version computes full history instead of EWMA. Copy-pasted from
+    Stable Baslines."""
+    def __init__(self, shape=(), epsilon=1e-4):
+        """
+        calulates the running mean and std of a data stream
+        https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+        :param shape: (tuple) the shape of the data stream's output
+        :param epsilon: (float) helps with arithmetic issues
+        """
+        self.mean = torch.zeros(shape, dtype=torch.double)
+        self.var = torch.ones(shape, dtype=torch.double)
+        self.count = epsilon
+
+    @property
+    def std(self):
+        return torch.sqrt(self.var)
+
+    def update(self, arr):
+        # reshape as appropriate (assume last dimension(s) contain data
+        # elements)
+        shape_idx = len(arr.shape) - len(self.mean.shape)
+        assert shape_idx >= 0
+        tail_shape = arr.shape[shape_idx:]
+        assert tail_shape == self.mean.shape, (tail_shape, self.mean.shape)
+        arr = arr.view((-1, ) + tail_shape)
+
+        batch_var, batch_mean = torch.var_mean(arr)
+        batch_count = arr.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        delta = batch_mean - self.mean
+        tot_count = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / tot_count
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m_2 = m_a + m_b + (delta ** 2) * self.count * batch_count \
+            / (self.count + batch_count)
+        new_var = m_2 / (self.count + batch_count)
+
+        new_count = batch_count + self.count
+
+        self.mean = new_mean
+        self.var = new_var
+        self.count = new_count

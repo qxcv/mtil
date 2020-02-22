@@ -47,7 +47,7 @@ class RewardEvaluator:
         self.normalise = normalise
         self.obs_dims = obs_dims
         if normalise:
-            self.rew_running_average = RunningMeanVariance((), 0.9)
+            self.rew_running_average = RunningMeanVariance(())
         self.dev = next(iter(reward_model.parameters())).device
         self.reward_model = reward_model
 
