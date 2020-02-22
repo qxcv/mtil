@@ -42,7 +42,6 @@ def cli():
               type=int,
               help="number of rollout workers")
 @click.option("--seed", default=42, help="PRNG seed")
-@click.option("--epochs", default=1000, help="epochs of training to perform")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
 @click.option(
     "--log-interval-steps",
@@ -63,11 +62,8 @@ def cli():
               default=4,
               help="number of discriminator steps per RL step")
 @click.option("--total-n-steps",
-              default=1e7,
+              default=4e6,
               help="total number of steps to take in environment")
-@click.option("--eval-n-traj",
-              default=10,
-              help="number of trajectories to roll out on each evaluation")
 @click.option("--run-name",
               default=None,
               type=str,
@@ -75,8 +71,8 @@ def cli():
 @click.option("--snapshot-gap", default=10, help="evals between snapshots")
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
-         epochs, out_dir, run_name, gpu_idx, eval_n_traj, disc_up_per_iter,
-         total_n_steps, log_interval_steps, n_workers, snapshot_gap):
+         out_dir, run_name, gpu_idx, disc_up_per_iter, total_n_steps,
+         log_interval_steps, n_workers, snapshot_gap):
     # set up seeds & devices
     set_seeds(seed)
     # 'spawn' is necessary to use GL envs in subprocesses. For whatever reason
