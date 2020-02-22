@@ -51,7 +51,7 @@ class RewardEvaluator:
         self.dev = next(iter(reward_model.parameters())).device
         self.reward_model = reward_model
 
-    def evaluate(self, obs_tensor, act_tensor):
+    def evaluate(self, obs_tensor, act_tensor, update_stats=True):
         # put model into eval mode if necessary
         old_training = self.reward_model.training
         if old_training:
@@ -84,7 +84,8 @@ class RewardEvaluator:
 
         # normalise if necessary
         if self.normalise:
-            self.rew_running_average.update(new_reward.flatten())
+            if update_stats:
+                self.rew_running_average.update(new_reward.flatten())
             mu = self.rew_running_average.mean.item()
             std = self.rew_running_average.std.item()
             denom = max(std / self.target_std, 1e-3)
