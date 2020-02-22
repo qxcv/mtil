@@ -91,7 +91,7 @@ class MILBenchDiscriminator(nn.Module):
         )
 
     def forward(self, obs, act):
-        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)
+        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)  # images only
         lead_dim_act, T_act, B_act, act_shape = infer_leading_dims(act, 0)
         assert (lead_dim, T, B) == (lead_dim_act, T_act, B_act)
 
@@ -121,6 +121,12 @@ class RewardModel(nn.Module):
         """GAIL policy reward, without entropy bonus (should be introduced
         elsewhere). Policy should maximise this."""
         sigmoid_logits = self.discrim(obs, act)
+        # In the GAIL paper they use this as the cost (i.e. they minimise it).
+        # I'm maximising it to be consistent with the reference implementation,
+        # where the conventions for discriminator output are reversed (so high
+        # = expert & low = novice by default, although they do also have a
+        # switch that can flip the convention for environments with early
+        # termination).
         rewards = F.logsigmoid(sigmoid_logits)
         return rewards
 
@@ -228,7 +234,9 @@ class GAILOptimiser:
                 dim=0)
             logits = self.model(all_obs, all_acts)
 
-            # GAIL discriminator loss is E_fake[log D(s,a)] +
+            # GAIL discriminator *objective* is E_fake[log D(s,a)] +
+            # E_expert[log(1-D(s,a))]. You actually want to maximise this; in
+            # reality the "loss" to be minimised is -E_fake[log D(s,a)] -
             # E_expert[log(1-D(s,a))].
             #
             # binary_cross_entropy_with_logits computes -labels *
@@ -236,10 +244,17 @@ class GAILOptimiser:
             # PyTorch docs). In other words:
             #   -y * log D(s,a) - (1 - y) * log(1 - D(s, a))
             #
-            # Hence GAIL is like "reverse logistic regression" where you label
-            # expert demonstrations as 0 and fake (novice) demonstrations as 1,
-            # then flip the sign of the loss. I doubt that part of their
-            # algorithm is necessary, so I've just done things the normal way.
+            # Hence, GAIL is like logistic regression with label 1 for the
+            # novice and 0 for the expert. This is kind of weird, because you
+            # actually want to *minimise* the discriminator's output. Indeed,
+            # in the actual implementation, they flip this & use 1 for the
+            # expert and 0 for the novice.
+
+            # In light of all the above, I'm using the OPPOSITE convention to
+            # the paper, but the same convention as the implementation. To wit:
+            #
+            # - 1 is the *expert* label, and high = more expert-like
+            # - 0 is the *novice* label, and low = less expert-like
             loss = F.binary_cross_entropy_with_logits(logits,
                                                       is_real_label,
                                                       reduction='mean')

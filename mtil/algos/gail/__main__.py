@@ -18,10 +18,11 @@ import torch
 
 from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
                                   MILBenchDiscriminator, RewardModel)
-from mtil.common import (MILBenchGymEnv, MILBenchTrajInfo, MultiHeadPolicyNet,
-                         get_env_meta, load_demos_mt, make_logger_ctx,
-                         sane_click_init, set_seeds, FixedTaskModelWrapper)
-from mtil.reward_injection_wrappers import CustomRewardPPO
+from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
+                         MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
+                         load_demos_mt, make_logger_ctx, sane_click_init,
+                         set_seeds)
+from mtil.reward_injection_wrappers import CustomRewardPPO, RewardEvaluator
 
 
 @click.group()
@@ -155,6 +156,11 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
     discriminator = MILBenchDiscriminator(in_chans=in_chans,
                                           act_dim=n_actions).to(dev)
     reward_model = RewardModel(discriminator).to(dev)
+    reward_evaluator = RewardEvaluator(reward_model,
+                                       obs_dims=3,
+                                       batch_size=disc_batch_size,
+                                       normalise=True,
+                                       target_std=0.1)
     # TODO: figure out what pol_batch_size should be/do, and what relation it
     # should have with sampler batch size
     # TODO: also consider adding a BC loss to the policy (this will have to be
@@ -176,13 +182,12 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
     # value_loss_coeff and clip_grad_norm make much difference, since it's only
     # a factor of 2 change. cliprange difference might matter, but IDK. n_steps
     # will also matter a lot since it's so low by default in rlpyt (16).
-    extra_ppo_kwargs = dict(
-            learning_rate=0.00025,
-            value_loss_coeff=0.5,
-            clip_grad_norm=0.5,
-            gae_lambda=0.95)
+    extra_ppo_kwargs = dict(learning_rate=0.00025,
+                            value_loss_coeff=0.5,
+                            clip_grad_norm=0.5,
+                            gae_lambda=0.95)
     ppo_algo = CustomRewardPPO(normalize_advantage=True, **extra_ppo_kwargs)
-    ppo_algo.set_reward_model(reward_model)
+    ppo_algo.set_reward_evaluator(reward_evaluator)
 
     print("Setting up optimiser")
     gail_optim = GAILOptimiser(

@@ -477,3 +477,37 @@ def get_env_meta(env_name, ctx=multiprocessing):
             f"for '{env_name}'")
     result = rv_dict['result']
     return result
+
+
+class RunningMeanVariance:
+    """Running mean and variance. Intended for reward normalisation."""
+    def __init__(self, shape, discount=0.98):
+        assert isinstance(shape, tuple)
+        self._shape = shape
+        self._fo = np.zeros(shape)
+        self._so = np.zeros(shape)
+        self.discount = discount
+        self._n_updates = 0
+
+    @property
+    def mean(self):
+        # bias correction like Adam
+        ub_fo = self._fo / (1 - self.discount ** self._n_updates)
+        return ub_fo
+
+    @property
+    def std(self):
+        # same bias correction
+        ub_fo = self.mean
+        ub_so = self._so / (1 - self.discount ** self._n_updates)
+        return np.sqrt(ub_so - ub_fo ** 2)
+
+    def update(self, new_values):
+        new_values = np.asarray(new_values)
+        assert len(new_values) >= 1
+        assert new_values[0].shape == self._shape
+        nv_mean = np.mean(new_values, axis=0)
+        nv_sq_mean = np.mean(new_values ** 2, axis=0)
+        self._fo = self.discount * self._fo + (1 - self.discount) * nv_mean
+        self._so = self.discount * self._so + (1 - self.discount) * nv_sq_mean
+        self._n_updates += 1

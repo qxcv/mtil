@@ -21,49 +21,76 @@ than PG. Some notes:
 
 from collections import namedtuple
 
-import numpy as np
 from rlpyt.algos.pg.a2c import A2C
 from rlpyt.algos.pg.ppo import PPO
+from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
+
+from mtil.common import RunningMeanVariance
 
 # ################# #
 # For PG algorithms #
 # ################# #
 
 
-class _RunningMeanVariance:
-    """Exponentially-weighted running mean and variance, for reward
-    normalisation."""
-    def __init__(self, shape, discount=0.98):
-        assert isinstance(shape, tuple)
-        self._shape = shape
-        self._fo = np.zeros(shape)
-        self._so = np.zeros(shape)
-        self.discount = discount
-        self._n_updates = 0
+class RewardEvaluator:
+    """Batching reward evaluator which can optionally standardise reward
+    values."""
+    def __init__(self,
+                 reward_model,
+                 obs_dims,
+                 batch_size=256,
+                 target_std=0.1,
+                 normalise=False):
+        self.batch_size = batch_size
+        self.target_std = target_std
+        self.normalise = normalise
+        self.obs_dims = obs_dims
+        if normalise:
+            self.rew_running_average = RunningMeanVariance((), 0.9)
+        self.dev = next(iter(reward_model.parameters())).device
+        self.reward_model = reward_model
 
-    @property
-    def mean(self):
-        # bias correction like Adam
-        ub_fo = self._fo / (1 - self.discount ** self._n_updates)
-        return ub_fo
+    def evaluate(self, obs_tensor, act_tensor):
+        # put model into eval mode if necessary
+        old_training = self.reward_model.training
+        if old_training:
+            self.reward_model.eval()
 
-    @property
-    def std(self):
-        # same bias correction
-        ub_fo = self.mean
-        ub_so = self._so / (1 - self.discount ** self._n_updates)
-        return np.sqrt(ub_so - ub_fo ** 2)
+        with torch.no_grad():
+            # flatten observations & actions
+            old_dev = obs_tensor.device
+            lead_dim, T, B, _ = infer_leading_dims(obs_tensor, self.obs_dims)
+            obs_flat = obs_tensor.view((T*B, ) + obs_tensor.shape[lead_dim:])
+            act_flat = act_tensor.view((T*B, ) + act_tensor.shape[lead_dim:])
 
-    def update(self, new_values):
-        new_values = np.asarray(new_values)
-        assert len(new_values) >= 1
-        assert new_values[0].shape == self._shape
-        nv_mean = np.mean(new_values, axis=0)
-        nv_sq_mean = np.mean(new_values ** 2, axis=0)
-        self._fo = self.discount * self._fo + (1 - self.discount) * nv_mean
-        self._so = self.discount * self._so + (1 - self.discount) * nv_sq_mean
-        self._n_updates += 1
+            # now evaluate one batch at a time
+            reward_tensors = []
+            for b_start in range(0, T * B, self.batch_size):
+                obs_batch = obs_flat[b_start:b_start + self.batch_size]
+                act_batch = act_flat[b_start:b_start + self.batch_size]
+                dev_obs = obs_batch.to(self.dev)
+                dev_acts = act_batch.to(self.dev)
+                dev_reward = self.reward_model(dev_obs, dev_acts)
+                reward_tensors.append(dev_reward.to(old_dev))
+
+            # join together the batch results
+            new_reward_flat = torch.cat(reward_tensors, 0)
+            new_reward = restore_leading_dims(new_reward_flat, lead_dim, T, B)
+
+        # put back into training mode if necessary
+        if old_training:
+            self.reward_model.train(old_training)
+
+        # normalise if necessary
+        if self.normalise:
+            self.rew_running_average.update(new_reward.flatten())
+            mu = self.rew_running_average.mean.item()
+            std = self.rew_running_average.std.item()
+            denom = max(std / self.target_std, 1e-3)
+            new_reward = (new_reward - mu) / denom
+
+        return new_reward
 
 
 class CustomRewardMixinPg:
@@ -81,41 +108,22 @@ class CustomRewardMixinPg:
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._rew_running_average = _RunningMeanVariance((), discount=0.9)
 
-    def set_reward_model(self, reward_model):
-        self._reward_model = reward_model
-        self._dev = next(iter(reward_model.parameters())).device
+    def set_reward_evaluator(self, reward_evaluator):
+        self._reward_eval = reward_evaluator
 
     def process_returns(self, samples):
-        # inject custom reward into samples
-        assert self._reward_model is not None, \
-            "must call .set_reward_model() on algorithm before continuing"
+        # evaluate new rewards
+        assert self._reward_eval is not None, \
+            "must call .set_reward_eval() on algorithm before continuing"
+        new_reward = self._reward_eval.evaluate(
+            samples.env.observation, samples.agent.action)
 
-        old_training = self._reward_model.training
-        if old_training:
-            self._reward_model.eval()
-        with torch.no_grad():
-            old_dev = samples.env.observation.device
-            dev_obs = samples.env.observation.to(self._dev)
-            dev_acts = samples.agent.action.to(self._dev)
-            dev_reward = self._reward_model(dev_obs, dev_acts)
-            new_reward = dev_reward.to(old_dev)
-        if old_training:
-            self._reward_model.train(old_training)
+        # sanity-check reward shapes
+        assert new_reward.shape == samples.env.reward.shape, \
+            (new_reward.shape, samples.env.reward.shape)
 
-        # normalise
-        # TODO: this normalisation logic should be put in self._reward_model or
-        # in an env wrapper, not here
-        self._rew_running_average.update(new_reward.flatten())
-        mu = self._rew_running_average.mean.item()
-        std = self._rew_running_average.std.item()
-        new_reward = (new_reward - mu) / max(10 * std, 1e-3)
-
-        old_reward = samples.env.reward
-        assert new_reward.shape == old_reward.shape, \
-            (new_reward.shape, old_reward.shape)
-
+        # replace rewards
         new_samples = samples._replace(env=samples.env._replace(
             reward=new_reward))
 
