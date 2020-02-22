@@ -23,6 +23,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils import data
+import torchvision.utils as vutils
 
 
 class MILBenchPreprocLayer(nn.Module):
@@ -561,3 +562,22 @@ class RunningMeanVariance:
         self.mean = new_mean
         self.var = new_var
         self.count = new_count
+
+
+def save_normalised_image_tensor(image_tensor, file_name):
+    """Save a normalised tensor of stacked images. Tensor values should be in
+    [-1, 1], and tensor shape should be [Ni*3, H, W], or [B, Ni*3, H, W], or
+    [T, B, Ni*3, H, W]. Here Ni is the number of stacked images, each of which
+    are three-channel RGB."""
+    lead_dim, T, B, shape = infer_leading_dims(image_tensor, 3)
+    # make sure channels axis is (probably) a stack of RGB frames
+    assert len(shape) == 3 and shape[0] < 30 \
+        and 0 == (shape[0] % 3), shape
+    # reshaping this way separates out each stacked image into its own frame
+    Ni = shape[0] // 3
+    flat_tensor = image_tensor.view((T * B * Ni, 3) + shape[1:])
+    assert torch.all((-1.1 <= flat_tensor) & (flat_tensor <= 1.1)), \
+        f"this only takes normalised images, but range is " \
+        f"[{flat_tensor.min()}, {flat_tensor.max()}]"
+    nrow = max(1, int(np.sqrt(flat_tensor.shape[0])))
+    vutils.save_image(flat_tensor, file_name, nrow, range=(-1, 1))
