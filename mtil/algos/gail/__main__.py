@@ -8,6 +8,7 @@ that parts of the implementation can be pickled."""
 import multiprocessing as mp
 import os
 import readline  # noqa: F401
+import warnings
 
 import click
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
@@ -69,10 +70,20 @@ def cli():
               type=str,
               help="unique name for this run")
 @click.option("--snapshot-gap", default=10, help="evals between snapshots")
+@click.option("--danger-debug-reward-weight",
+              type=float,
+              default=None,
+              help="Replace some fraction of the IL reward with raw rewards "
+              "from the env (DANGER!)")
+@click.option("--danger-override-env-name",
+              type=str,
+              default=None,
+              help="override env name in demos (and any preprocessors etc.)")
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
          out_dir, run_name, gpu_idx, disc_up_per_iter, total_n_steps,
-         log_interval_steps, n_workers, snapshot_gap):
+         log_interval_steps, n_workers, snapshot_gap,
+         danger_debug_reward_weight, danger_override_env_name):
     # set up seeds & devices
     set_seeds(seed)
     # 'spawn' is necessary to use GL envs in subprocesses. For whatever reason
@@ -107,6 +118,10 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
     assert len(env_ids_and_names) == 1, \
         "GAIL doesn't support multi-task training yet"
     (env_name, env_id), = env_ids_and_names
+    if danger_override_env_name:
+        warnings.warn(f"Overriding environment name {env_name} with "
+                      f"{danger_override_env_name}")
+        env_name = danger_override_env_name
 
     print("Getting env metadata")
     # local copy of Gym env, w/ args to create equivalent env in the sampler
@@ -178,11 +193,13 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
     # value_loss_coeff and clip_grad_norm make much difference, since it's only
     # a factor of 2 change. cliprange difference might matter, but IDK. n_steps
     # will also matter a lot since it's so low by default in rlpyt (16).
-    extra_ppo_kwargs = dict(learning_rate=0.00025,
-                            value_loss_coeff=0.5,
-                            clip_grad_norm=0.5,
-                            gae_lambda=0.95)
-    ppo_algo = CustomRewardPPO(normalize_advantage=True, **extra_ppo_kwargs)
+    ppo_hyperparams = dict(learning_rate=0.00025,
+                           value_loss_coeff=0.5,
+                           clip_grad_norm=0.5,
+                           gae_lambda=0.95,
+                           normalize_advantage=True)
+    ppo_algo = CustomRewardPPO(true_reward_weight=danger_debug_reward_weight,
+                               **ppo_hyperparams)
     ppo_algo.set_reward_evaluator(reward_evaluator)
 
     print("Setting up optimiser")

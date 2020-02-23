@@ -135,32 +135,32 @@ GAILInfo = namedtuple(
     'GAILInfo',
     [
         # these are the names that should be written to the log
-        'DiscMeanXEnt',
-        'DiscAcc',
-        'DiscAccExpert',
-        'DiscAccNovice',
-        'DiscFracExpertTrue',
-        'DiscFracExpertPred',
-        'DiscMeanLabelEnt',
+        'discMeanXEnt',
+        'discAcc',
+        'discAccExpert',
+        'discAccNovice',
+        'discFracExpertTrue',
+        'discFracExpertPred',
+        'discMeanLabelEnt',
     ])
 
 
 def _compute_gail_stats(disc_logits, is_real_labels):
     """Returns dict for use in constructing GAILInfo later on. Provides a dict
-    containing every field except DiscMeanXEnt."""
+    containing every field except discMeanXEnt."""
     # Reminder: in GAIL, high output = predicted to be from expert. In arrays
     # below, 1 = expert and 0 = novice.
     pred_labels = (disc_logits > 0).to(dtype=torch.float32, device='cpu')
     real_labels = (is_real_labels > 0).to(dtype=torch.float32, device='cpu')
     torch_dict = dict(
-        DiscAcc=torch.mean((pred_labels == real_labels).to(torch.float32)),
-        DiscAccExpert=torch.mean(
+        discAcc=torch.mean((pred_labels == real_labels).to(torch.float32)),
+        discAccExpert=torch.mean(
             (pred_labels[real_labels.nonzero()] > 0).to(torch.float32)),
-        DiscAccNovice=torch.mean(
+        discAccNovice=torch.mean(
             (pred_labels[(1 - real_labels).nonzero()] <= 0).to(torch.float32)),
-        DiscFracExpertTrue=(torch.sum(real_labels) / real_labels.shape[0]),
-        DiscFracExpertPred=(torch.sum(pred_labels) / pred_labels.shape[0]),
-        DiscMeanLabelEnt=-torch.mean(
+        discFracExpertTrue=(torch.sum(real_labels) / real_labels.shape[0]),
+        discFracExpertPred=(torch.sum(pred_labels) / pred_labels.shape[0]),
+        discMeanLabelEnt=-torch.mean(
             torch.sigmoid(disc_logits) * F.logsigmoid(disc_logits)),
     )
     np_dict = {k: v.item() for k, v in torch_dict.items()}
@@ -263,7 +263,7 @@ class GAILOptimiser:
 
             # for logging; we'll average theses later
             info_dict = _compute_gail_stats(logits, is_real_label)
-            info_dict['DiscMeanXEnt'] = loss.item()
+            info_dict['discMeanXEnt'] = loss.item()
             info_dicts.append(info_dict)
 
         # switch back to eval mode

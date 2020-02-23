@@ -20,6 +20,7 @@ than PG. Some notes:
   learnt reward."""
 
 from collections import namedtuple
+import warnings
 
 from rlpyt.algos.pg.a2c import A2C
 from rlpyt.algos.pg.ppo import PPO
@@ -107,22 +108,39 @@ class CustomRewardMixinPg:
     # optimize_agent())
     _custom_logging_fields = ('synthRew', 'synthRet', 'synthAdv')
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, true_reward_weight=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self._true_reward_weight = true_reward_weight
+        if self._true_reward_weight:
+            assert 0 < self._true_reward_weight <= 1.0, \
+                f"true_reward_weight must be in [0,1], but was " \
+                f"{self._true_reward_weight} (this code takes a convex " \
+                f"combination of true & GAIL rewards)"
+            warnings.warn(
+                "USING GROUND TRUTH REWARD (!) in CustomRewardMixinPg. This "
+                "is only for debugging, so remember to disable it later!")
 
     def set_reward_evaluator(self, reward_evaluator):
         self._reward_eval = reward_evaluator
 
     def process_returns(self, samples):
-        # evaluate new rewards
         assert self._reward_eval is not None, \
             "must call .set_reward_eval() on algorithm before continuing"
+
+        # evaluate new rewards
         new_reward = self._reward_eval.evaluate(
             samples.env.observation, samples.agent.action)
 
         # sanity-check reward shapes
         assert new_reward.shape == samples.env.reward.shape, \
             (new_reward.shape, samples.env.reward.shape)
+
+        if self._true_reward_weight:
+            # debuging branch: use ground truth rewards
+            alpha = self._true_reward_weight
+            warnings.warn(f"USING GROUND TRUTH REWARD (!) at alpha={alpha}")
+            env_reward = samples.env.reward
+            new_reward = (1 - alpha) * new_reward + alpha * env_reward
 
         # replace rewards
         new_samples = samples._replace(env=samples.env._replace(
