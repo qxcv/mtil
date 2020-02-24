@@ -45,6 +45,9 @@ def cli():
               default=None,
               type=str,
               help="unique name for this run")
+@click.option("--omit-noop/--no-omit-noop",
+              default=False,
+              help="omit demonstration (s,a) pairs whenever a is a noop")
 # set this to some big value if training on perceptron or something
 @click.option(
     "--passes-per-eval",
@@ -55,7 +58,7 @@ def cli():
               help="how many evals to wait for before saving snapshot")
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
-          gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap):
+          gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop):
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
     # loading should be simplified by having a single class that can provide
@@ -75,7 +78,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
     # TODO: maybe make this a class so that I don't have to pass around a
     # zillion attrs and use ~5 lines just to load some demos?
     dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
-        = load_demos_mt(demos, add_preproc)
+        = load_demos_mt(demos, add_preproc, omit_noop=omit_noop)
     loader_mt = make_loader_mt(dataset_mt, batch_size)
 
     dataset_len = len(loader_mt)

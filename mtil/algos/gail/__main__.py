@@ -17,8 +17,10 @@ from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.utils.logging import logger
 import torch
 
+# TODO: factor load_state_dict_or_model from mtbc out into common
 from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
                                   MILBenchDiscriminator, RewardModel)
+from mtil.algos.mtbc.mtbc import load_state_dict_or_model
 from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
                          MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
                          load_demos_mt, make_logger_ctx, sane_click_init,
@@ -70,6 +72,10 @@ def cli():
               type=str,
               help="unique name for this run")
 @click.option("--snapshot-gap", default=10, help="evals between snapshots")
+@click.option("--load-policy",
+              default=None,
+              type=str,
+              help="path to a policy snapshot to load (e.g. from MTBC)")
 @click.option("--danger-debug-reward-weight",
               type=float,
               default=None,
@@ -82,7 +88,7 @@ def cli():
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
          out_dir, run_name, gpu_idx, disc_up_per_iter, total_n_steps,
-         log_interval_steps, n_workers, snapshot_gap,
+         log_interval_steps, n_workers, snapshot_gap, load_policy,
          danger_debug_reward_weight, danger_override_env_name):
     # set up seeds & devices
     set_seeds(seed)
@@ -230,13 +236,20 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
         log_interval_steps=log_interval_steps,
         affinity=affinity)
 
-    def save_model_cb(runner):
+    def init_policy_cb(runner):
         """Callback which gets called once after Runner startup to save an
-        initial policy model."""
+        initial policy model, and optionally load saved parameters."""
         # get state of newly-initalised model
         wrapped_model = runner.algo.agent.model
         assert wrapped_model is not None, "has ppo_agent been initalised?"
         unwrapped_model = wrapped_model.model
+
+        if load_policy:
+            print(f"Loading policy from '{load_policy}'")
+            saved_model = load_state_dict_or_model(load_policy)
+            saved_dict = saved_model.state_dict()
+            unwrapped_model.load_state_dict(saved_dict)
+
         real_state = unwrapped_model.state_dict()
 
         # make a clone model so we can pickle it, and copy across weights
@@ -260,7 +273,7 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
             os.path.join(logger.get_snapshot_dir(), 'full_discrim_model.pt'))
         # note that periodic snapshots get saved by GAILMiniBatchRl, thanks to
         # the overridden get_itr_snapshot() method
-        runner.train(cb_startup=save_model_cb)
+        runner.train(cb_startup=init_policy_cb)
 
 
 if __name__ == '__main__':

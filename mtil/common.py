@@ -280,7 +280,7 @@ def make_logger_ctx(out_dir,
                                   **kwargs)
 
 
-def trajectories_to_dataset_mt(demo_trajs_by_env):
+def trajectories_to_dataset_mt(demo_trajs_by_env, omit_noop=False):
     """Re-format multi-task trajectories into a Torch dataset."""
 
     cpu_dev = torch.device("cpu")
@@ -315,6 +315,15 @@ def trajectories_to_dataset_mt(demo_trajs_by_env):
     all_obs = torch.cat(all_obs)
     all_acts = torch.cat(all_acts)
     all_ids = torch.cat(all_ids)
+
+    if omit_noop:
+        # omit action 0 (helps avoid the "agent does nothing initially" problem
+        # for MILBench)
+        valid_inds = torch.squeeze(torch.nonzero(all_acts), 1)
+        all_obs = all_obs[valid_inds]
+        all_acts = all_acts[valid_inds]
+        all_ids = all_ids[valid_inds]
+
     dataset = data.TensorDataset(all_ids, all_obs, all_acts)
 
     return dataset, env_name_to_id, env_id_to_name
@@ -351,7 +360,7 @@ def make_loader_mt(dataset, batch_size):
 
 # TODO: unify this, make_loader_mt, and trajectories_to_dataset_mt into one big
 # class.
-def load_demos_mt(demo_paths, add_preproc=None):
+def load_demos_mt(demo_paths, add_preproc=None, omit_noop=False):
     """Load multi-task demonstrations. Can apply any desired MILBench
     preprocessor as needed."""
     demo_dicts = load_demos(demo_paths)
@@ -384,7 +393,7 @@ def load_demos_mt(demo_paths, add_preproc=None):
             for orig_env_name, env_name in name_pairs
         }
     dataset_mt, env_name_to_id, env_id_to_name = trajectories_to_dataset_mt(
-        demo_trajs_by_env)
+        demo_trajs_by_env, omit_noop=omit_noop)
 
     return dataset_mt, env_name_to_id, env_id_to_name, name_pairs
 
