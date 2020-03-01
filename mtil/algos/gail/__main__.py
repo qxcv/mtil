@@ -88,7 +88,7 @@ def cli():
               type=str,
               help="path to a policy snapshot to load (e.g. from MTBC)")
 @click.option("--omit-noop/--no-omit-noop",
-              default=False,
+              default=True,
               help="omit demonstration (s,a) pairs whenever a is a noop")
 @click.option("--danger-debug-reward-weight",
               type=float,
