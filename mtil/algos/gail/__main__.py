@@ -18,14 +18,15 @@ from rlpyt.utils.logging import logger
 import torch
 
 # TODO: factor load_state_dict_or_model from mtbc out into common
+from mtil.algos.gail.embedded_bc import BCCustomRewardPPO
 from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
                                   MILBenchDiscriminator, RewardModel)
 from mtil.algos.mtbc.mtbc import load_state_dict_or_model
 from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
                          MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
-                         load_demos_mt, make_logger_ctx, sane_click_init,
-                         set_seeds)
-from mtil.reward_injection_wrappers import CustomRewardPPO, RewardEvaluator
+                         load_demos_mt, make_loader_mt, make_logger_ctx,
+                         sane_click_init, set_seeds)
+from mtil.reward_injection_wrappers import RewardEvaluator
 
 
 @click.group()
@@ -67,6 +68,7 @@ def cli():
 @click.option("--total-n-steps",
               default=4e6,
               help="total number of steps to take in environment")
+@click.option("--bc-loss", default=0.1, help="behavioural cloning loss coeff")
 @click.option("--run-name",
               default=None,
               type=str,
@@ -88,7 +90,7 @@ def cli():
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
          out_dir, run_name, gpu_idx, disc_up_per_iter, total_n_steps,
-         log_interval_steps, n_workers, snapshot_gap, load_policy,
+         log_interval_steps, n_workers, snapshot_gap, load_policy, bc_loss,
          danger_debug_reward_weight, danger_override_env_name):
     # set up seeds & devices
     set_seeds(seed)
@@ -204,8 +206,15 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
                            clip_grad_norm=0.5,
                            gae_lambda=0.95,
                            normalize_advantage=True)
-    ppo_algo = CustomRewardPPO(true_reward_weight=danger_debug_reward_weight,
-                               **ppo_hyperparams)
+    if bc_loss:
+        ppo_loader_mt = make_loader_mt(dataset_mt,
+                                       max(16, min(128, batch_B * batch_T)))
+    else:
+        ppo_loader_mt = None
+    ppo_algo = BCCustomRewardPPO(bc_loss_coeff=bc_loss,
+                                 expert_traj_loader=ppo_loader_mt,
+                                 true_reward_weight=danger_debug_reward_weight,
+                                 **ppo_hyperparams)
     ppo_algo.set_reward_evaluator(reward_evaluator)
 
     print("Setting up optimiser")
