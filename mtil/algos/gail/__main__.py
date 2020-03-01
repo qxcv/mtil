@@ -53,10 +53,14 @@ def cli():
     help="how many env transitions to take between writing log outputs")
 # FIXME: rename these --ppo-batch-b and --ppo-batch-t instead, since that's
 # really what they are.
-@click.option("--n-envs",
+@click.option("-B",
+              "--sampler-batch-envs",
+              "sampler_batch_B",
               default=16,
               help="number of parallel envs to sample from")
-@click.option("--n-steps-per-iter",
+@click.option("-T",
+              "--sampler-time-steps",
+              "sampler_batch_T",
               default=128,
               help="number of timesteps to advance each env when sampling")
 @click.option("--disc-batch-size",
@@ -65,6 +69,11 @@ def cli():
 @click.option("--disc-up-per-iter",
               default=4,
               help="number of discriminator steps per RL step")
+@click.option('--disc-replay-mult',
+              type=int,
+              default=5,
+              help="number of past epochs worth of interaction to save in "
+              "discriminator replay buffer")
 @click.option("--total-n-steps",
               default=4e6,
               help="total number of steps to take in environment")
@@ -78,6 +87,9 @@ def cli():
               default=None,
               type=str,
               help="path to a policy snapshot to load (e.g. from MTBC)")
+@click.option("--omit-noop/--no-omit-noop",
+              default=False,
+              help="omit demonstration (s,a) pairs whenever a is a noop")
 @click.option("--danger-debug-reward-weight",
               type=float,
               default=None,
@@ -88,9 +100,10 @@ def cli():
               default=None,
               help="override env name in demos (and any preprocessors etc.)")
 @click.argument("demos", nargs=-1, required=True)
-def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
-         out_dir, run_name, gpu_idx, disc_up_per_iter, total_n_steps,
-         log_interval_steps, n_workers, snapshot_gap, load_policy, bc_loss,
+def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
+         disc_batch_size, out_dir, run_name, gpu_idx, disc_up_per_iter,
+         total_n_steps, log_interval_steps, n_workers, snapshot_gap,
+         load_policy, bc_loss, omit_noop, disc_replay_mult,
          danger_debug_reward_weight, danger_override_env_name):
     # set up seeds & devices
     set_seeds(seed)
@@ -119,7 +132,7 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
 
     # load demos (this code copied from bc.py in original baselines)
     dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
-        = load_demos_mt(demos, add_preproc)
+        = load_demos_mt(demos, add_preproc, omit_noop=omit_noop)
     # loader_mt = make_loader_mt(dataset_mt, disc_batch_size // 2)
     env_ids_and_names = [(name, env_name_to_id[name])
                          for _, name in name_pairs]
@@ -138,8 +151,6 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
     env_meta = get_env_meta(env_name)
     # number of transitions collected during each round of sampling will be
     # batch_T * batch_B = n_steps * n_envs
-    batch_T = n_steps_per_iter
-    batch_B = n_envs
 
     print("Setting up sampler")
     if use_gpu:
@@ -151,9 +162,8 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
         env_ctor_kwargs,
         max_decorrelation_steps=env_meta.spec.max_episode_steps,
         TrajInfoCls=MILBenchTrajInfo,
-        # seed=seed,  # TODO: make sampler seeding work
-        batch_T=batch_T,
-        batch_B=batch_B)
+        batch_T=sampler_batch_T,
+        batch_B=sampler_batch_B)
 
     print("Setting up agent")
     # should be (H,W,C) even w/ frame stack
@@ -207,8 +217,9 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
                            gae_lambda=0.95,
                            normalize_advantage=True)
     if bc_loss:
-        ppo_loader_mt = make_loader_mt(dataset_mt,
-                                       max(16, min(128, batch_B * batch_T)))
+        # TODO: make this configurable
+        ppo_loader_mt = make_loader_mt(
+            dataset_mt, max(16, min(128, sampler_batch_B * sampler_batch_T)))
     else:
         ppo_loader_mt = None
     ppo_algo = BCCustomRewardPPO(bc_loss_coeff=bc_loss,
@@ -218,20 +229,19 @@ def main(demos, add_preproc, seed, n_envs, n_steps_per_iter, disc_batch_size,
     ppo_algo.set_reward_evaluator(reward_evaluator)
 
     print("Setting up optimiser")
-    gail_optim = GAILOptimiser(
-        dataset_mt=dataset_mt,
-        discrim_model=discriminator,
-        buffer_num_samples=batch_T *
-        # TODO: also update this once you've figured out what arg to give to
-        # sampler
-        max(batch_B, disc_batch_size),
-        batch_size=disc_batch_size,
-        updates_per_itr=disc_up_per_iter,
-        dev=dev)
+    gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
+                               discrim_model=discriminator,
+                               buffer_num_samples=max(
+                                   disc_batch_size,
+                                   sampler_batch_T * sampler_batch_B),
+                               batch_size=disc_batch_size,
+                               updates_per_itr=disc_up_per_iter,
+                               dev=dev)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards
     runner = GAILMinibatchRl(
+        seed=seed,
         gail_optim=gail_optim,
         algo=ppo_algo,
         agent=ppo_agent,
