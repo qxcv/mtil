@@ -14,7 +14,7 @@ from milbench import register_envs
 from milbench.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 import numpy as np
-from rlpyt.envs.gym import GymEnvWrapper
+from rlpyt.envs.gym_schema import GymEnvWrapper
 from rlpyt.utils.collections import AttrDict
 from rlpyt.utils.logging import context as log_ctx
 from rlpyt.utils.logging import logger
@@ -584,7 +584,7 @@ def save_normalised_image_tensor(image_tensor, file_name):
         and 0 == (shape[0] % 3), shape
     # reshaping this way separates out each stacked image into its own frame
     Ni = shape[0] // 3
-    flat_tensor = image_tensor.view((T * B * Ni, 3) + shape[1:])
+    flat_tensor = image_tensor.reshape((T * B * Ni, 3) + shape[1:])
     assert torch.all((-1.1 <= flat_tensor) & (flat_tensor <= 1.1)), \
         f"this only takes normalised images, but range is " \
         f"[{flat_tensor.min()}, {flat_tensor.max()}]"
