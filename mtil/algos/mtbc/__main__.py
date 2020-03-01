@@ -46,7 +46,7 @@ def cli():
               type=str,
               help="unique name for this run")
 @click.option("--omit-noop/--no-omit-noop",
-              default=False,
+              default=True,
               help="omit demonstration (s,a) pairs whenever a is a noop")
 # set this to some big value if training on perceptron or something
 @click.option(

@@ -5,13 +5,13 @@ import itertools
 
 from rlpyt.agents.base import AgentInputs
 from rlpyt.algos.pg.base import OptInfo
-from rlpyt.algos.pg.ppo import LossInputs
+from rlpyt.algos.pg.ppo import PPO, LossInputs
 from rlpyt.utils.buffer import buffer_method, buffer_to
 from rlpyt.utils.misc import iterate_mb_idxs
 from rlpyt.utils.tensor import valid_mean
 import torch
 
-from mtil.reward_injection_wrappers import CustomRewardPPO
+from mtil.reward_injection_wrappers import CustomRewardMixinPg
 
 
 class BehaviouralCloningPPOMixin:
@@ -166,5 +166,5 @@ class BehaviouralCloningPPOMixin:
         return loss, entropy, perplexity
 
 
-class BCCustomRewardPPO(BehaviouralCloningPPOMixin, CustomRewardPPO):
+class BCCustomRewardPPO(CustomRewardMixinPg, BehaviouralCloningPPOMixin, PPO):
     pass
