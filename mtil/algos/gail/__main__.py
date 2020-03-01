@@ -219,7 +219,7 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     if bc_loss:
         # TODO: make this configurable
         ppo_loader_mt = make_loader_mt(
-            dataset_mt, max(16, min(128, sampler_batch_B * sampler_batch_T)))
+            dataset_mt, max(16, min(64, sampler_batch_B * sampler_batch_T)))
     else:
         ppo_loader_mt = None
     ppo_algo = BCCustomRewardPPO(bc_loss_coeff=bc_loss,
@@ -233,7 +233,8 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
                                discrim_model=discriminator,
                                buffer_num_samples=max(
                                    disc_batch_size,
-                                   sampler_batch_T * sampler_batch_B),
+                                   disc_replay_mult * sampler_batch_T *
+                                   sampler_batch_B),
                                batch_size=disc_batch_size,
                                updates_per_itr=disc_up_per_iter,
                                dev=dev)

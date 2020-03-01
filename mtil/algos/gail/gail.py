@@ -30,7 +30,7 @@ class DiscrimTrainBuffer:
             all_observation=example_samples.env.observation,
             all_action=example_samples.agent.action)
         T, B = get_leading_dims(replay_samples, n_dim=2)
-        assert total_n_samples > T * B > 0, (total_n_samples, T * B)
+        assert total_n_samples >= T * B > 0, (total_n_samples, T * B)
         self.circ_buf = buffer_from_example(replay_samples[0, 0],
                                             (total_n_samples, ))
         self.samples_in_buffer = 0
