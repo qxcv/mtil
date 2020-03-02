@@ -5,10 +5,10 @@ import os
 import subprocess
 
 DEMO_PATH_PATTERNS = {
-    'move-to-corner': '~/repos/milbench/demos/move-to-corner-2019-12-09/demo-MoveToCorner-Demo-v0-2019-12-09T*.pkl.gz',  # noqa: E501
-    'match-regions': '~/repos/milbench/demos/match-regions-2019-12-09/demo-MatchRegions-Demo-v0-2019-12-09T*.pkl.gz',  # noqa: E501
-    'cluster-colour': '~/repos/milbench/demos/cluster-colour-2019-12-09/demo-ClusterColour-Demo-v0-2019-12-09T*.pkl.gz',  # noqa: E501
-    'cluster-type': '~/repos/milbench/demos/cluster-type-2019-12-09/demo-ClusterType-Demo-v0-2019-12-09T*.pkl.gz',  # noqa: E501
+    'move-to-corner': '~/repos/milbench/demos-simplified/move-to-corner-2020-03-*/demo-MoveToCorner-Demo-v0-2020-03-*T*.pkl.gz',  # noqa: E501
+    'match-regions': '~/repos/milbench/demos-simplified/match-regions-2020-03-*/demo-MatchRegions-Demo-v0-2020-03-*T*.pkl.gz',  # noqa: E501
+    'cluster-colour': '~/repos/milbench/demos-simplified/cluster-colour-2020-03-*/demo-ClusterColour-Demo-v0-2020-03-*T*.pkl.gz',  # noqa: E501
+    'cluster-type': '~/repos/milbench/demos-simplified/cluster-type-2020-03-*/demo-ClusterType-Demo-v0-2020-03-*T*.pkl.gz',  # noqa: E501
 }  # yapf: disable
 ENV_NAMES = {
     'move-to-corner': 'MoveToCorner-Demo-LoResStack-v0',
@@ -35,7 +35,8 @@ def expand_patterns(*patterns):
 
 
 def gen_command(expts, run_name, n_epochs, gpu_idx=0):
-    demo_paths = expand_patterns(*[DEMO_PATH_PATTERNS[expt] for expt in expts])
+    # demo_paths = expand_patterns(*[DEMO_PATH_PATTERNS[expt] for expt in expts])
+    demo_paths = [DEMO_PATH_PATTERNS[expt] for expt in expts]
     cmd_parts = [
         'xvfb-run',
         '-a',
@@ -137,7 +138,7 @@ def main():
         print("#!/bin/env bash\n", file=fp)
         for line in expt_commands:
             print(line, file=fp)
-            print(file=fp)
+            print('\n', file=fp)
 
 
 if __name__ == '__main__':
