@@ -65,7 +65,7 @@ class BehaviouralCloningPPOMixin:
                 # NOTE: if not recurrent, will lose leading T dim, should be
                 # OK.
                 bc_task_ids, bc_obs, bc_acts = next(self.expert_batch_iter)
-                assert bc_acts.dtype == torch.int32, bc_acts.dtype
+                assert not torch.is_floating_point(bc_acts), bc_acts
                 bc_acts = bc_acts.long()
                 loss, entropy, perplexity = self.loss(
                     *loss_inputs[T_idxs, B_idxs],

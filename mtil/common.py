@@ -39,8 +39,8 @@ class MILBenchPreprocLayer(nn.Module):
         # just transpose channels axis to front, do nothing else
         x = x.permute((0, 3, 1, 2))
 
-        assert (H, W) == (128, 128), \
-            f"(height,width)=({H},{W}), but should be (128,128) (try " \
+        assert (H, W) == (96, 96), \
+            f"(height,width)=({H},{W}), but should be (96,96) (try " \
             f"resizing)"
 
         # convert format and scale to [0,1]
@@ -144,7 +144,7 @@ class MultiHeadPolicyNet(nn.Module):
         self.feature_extractor = MILBenchFeatureNetwork(
             in_chans=in_chans, ActivationCls=ActivationCls)
         self.fc_postproc = nn.Sequential(
-            nn.Linear(1024, fc_dim),
+            nn.Linear(576, fc_dim),
             ActivationCls(),
             # now: flat <fc_dim>-elem vector
             nn.Linear(fc_dim, fc_dim),
