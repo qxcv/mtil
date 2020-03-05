@@ -511,6 +511,7 @@ def load_demos_mt(demo_paths, add_preproc=None, omit_noop=False):
                                           orig_env_name, add_preproc)
             for orig_env_name, env_name in name_pairs
         }
+    # TODO: add train/test split
     dataset_mt, env_name_to_id, env_id_to_name = trajectories_to_dataset_mt(
         demo_trajs_by_env, omit_noop=omit_noop)
 

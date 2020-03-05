@@ -119,6 +119,7 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
         f"can't have n_workers={n_workers} > cpu_count={cpu_count}"
     # TODO: figure out a better way of assigning work to cores (why can't my OS
     # scheduler do it? Grumble grumble…).
+    # (XXX: I suspect this will set torch_num_threads incorrectly, which sucks)
     affinity = dict(
         cuda_idx=gpu_idx if use_gpu else None,
         # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])

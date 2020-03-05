@@ -25,6 +25,8 @@ def copy_model_into_sampler(model, sampler, prefix='model'):
         for key, value in state_dict.items()
     }
     sampler.agent.load_state_dict(updated_state_dict)
+    # make sure sampler is in eval mode no matter what
+    sampler.agent.model.eval()
 
 
 def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval):
@@ -143,12 +145,12 @@ def wrap_model_for_fixed_task(model, env_name):
     return ft_wrapper
 
 
-def eval_model(sampler, n_traj=10):
+def eval_model(sampler, itr, n_traj=10):
     scores = []
     while len(scores) < n_traj:
         # can't see an obvious purpose to the 'itr' argument, so setting it to
         # None
-        samples_pyt, _ = sampler.obtain_samples(None)
+        samples_pyt, _ = sampler.obtain_samples(itr)
         eval_scores = samples_pyt.env.env_info.eval_score
         dones = samples_pyt.env.done
         done_scores = eval_scores.flatten()[dones.flatten()]

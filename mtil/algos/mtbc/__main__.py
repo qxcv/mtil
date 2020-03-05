@@ -1,3 +1,4 @@
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -7,7 +8,8 @@ import gym
 from milbench.evaluation import EvaluationProtocol, latexify_results
 import numpy as np
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
-from rlpyt.samplers.serial.sampler import SerialSampler
+from rlpyt.samplers.parallel.cpu.sampler import CpuSampler
+from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.utils.logging import logger
 import torch
 
@@ -72,9 +74,22 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
 
     # set up seeds & devices
     set_seeds(seed)
+    mp.set_start_method('spawn')
     use_gpu = gpu_idx is not None and torch.cuda.is_available()
     dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
     print(f"Using device {dev}, seed {seed}")
+    cpu_count = mp.cpu_count()
+    n_workers = max(1, cpu_count // 2)
+    affinity = dict(
+        cuda_idx=gpu_idx if use_gpu else None,
+        # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])
+        workers_cpus=list(range(n_workers)),
+    )
+
+    if use_gpu:
+        SamplerCls = GpuSampler
+    else:
+        SamplerCls = CpuSampler
 
     # register original envs
     import milbench
@@ -122,18 +137,19 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                 'width': net_width_mul,
             }
 
-        # TODO: make this a parallel sampler. Just use CpuSampler or some shit.
-        env_sampler = SerialSampler(env_ctor,
-                                    env_ctor_kwargs,
-                                    batch_T=max_steps,
-                                    max_decorrelation_steps=max_steps,
-                                    batch_B=min(eval_n_traj, batch_size))
+        env_sampler = SamplerCls(env_ctor,
+                                 env_ctor_kwargs,
+                                 batch_T=max_steps,
+                                 max_decorrelation_steps=max_steps,
+                                 batch_B=min(eval_n_traj, batch_size))
         env_agent = CategoricalPgAgent(ModelCls=FixedTaskModelWrapper,
                                        model_kwargs=dict(
                                            model_ctor=model_ctor,
                                            model_kwargs=model_kwargs,
                                            task_id=env_name_to_id[env_name]))
-        env_sampler.initialize(env_agent, seed=np.random.randint(1 << 31))
+        env_sampler.initialize(env_agent,
+                               seed=np.random.randint(1 << 31),
+                               affinity=affinity)
         env_agent.to_device(dev.index if use_gpu else None)
 
         samplers.append(env_sampler)
@@ -157,17 +173,21 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
             print(f"Starting epoch {epoch+1}/{epochs} ({dataset_len} batches "
                   f"* {passes_per_eval} passes between evaluations)")
 
+            model_mt.train()
             loss_ewma, losses, per_task_losses = do_epoch_training_mt(
                 loader_mt, model_mt, opt_mt, dev, passes_per_eval)
+
+            #  TODO: record accuracy on a subset of the train and validation
+            #  sets (in eval mode, not train mode)
 
             print(f"Evaluating {eval_n_traj} trajectories on "
                   f"{len(name_pairs)} envs")
             record_misc_calls = []
+            model_mt.eval()
             for (orig_env_name,
                  env_name), sampler in zip(name_pairs, samplers):
                 copy_model_into_sampler(model_mt, sampler)
-                model_mt.eval()
-                scores = eval_model(sampler, n_traj=eval_n_traj)
+                scores = eval_model(sampler, itr=epoch, n_traj=eval_n_traj)
                 tag = make_env_tag(orig_env_name)
                 logger.record_tabular_misc_stat("Score%s" % tag, scores)
                 env_id = env_name_to_id[env_name]
