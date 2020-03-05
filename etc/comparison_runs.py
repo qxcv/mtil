@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import datetime
 import glob
+import itertools
 import os
 import subprocess
 
@@ -19,6 +20,7 @@ ENV_NAMES = {
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 # IDK why I thought this was a better idea than "python -m mtil.algos.mtbc"
 MAIN_FILE = os.path.join(THIS_DIR, 'mtil/algos/mtbc/__main__.py')
+NUM_GPUS = 4
 
 
 def expand_patterns(*patterns):
@@ -91,22 +93,25 @@ def gen_all_expts():
     # these will all have GPU 0, so I need to change things once I have the
     # shell script. (another reminder: there are 20 passes through the dataset
     # for each 'eval')
+    gpu_itr = itertools.cycle(range(NUM_GPUS))
     date = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M')
     mt_run_name = f"multi-task-bc-{date}"
-    mt_cmd = gen_command(sorted(DEMO_PATH_PATTERNS.keys()), mt_run_name, 100)
+    mt_cmd = gen_command(
+            sorted(DEMO_PATH_PATTERNS.keys()), mt_run_name, 30,
+            gpu_idx=next(gpu_itr))
     st_run_names = {
         task: f"single-task-bc-{task}-{date}"
         for task in sorted(DEMO_PATH_PATTERNS.keys())
     }
     st_cmds = sorted([
-        gen_command([task], run_name, 100)
+        gen_command([task], run_name, 30, gpu_idx=next(gpu_itr))
         for task, run_name in st_run_names.items()
     ])
     train_cmds = [mt_cmd, *st_cmds]
 
     # test CMDs will write problem data to a problem-specific dataframe, then
     # combine the frames into a plot later on
-    target_itrs = [0, 9, 99]
+    target_itrs = [29]
     eval_cmds = []
     for itr in target_itrs:
         for env_shorthand, run_name in st_run_names.items():
@@ -137,7 +142,7 @@ def main():
     with open("commands.sh", "w") as fp:
         print("#!/bin/env bash\n", file=fp)
         for line in expt_commands:
-            print(line, file=fp)
+            print(line + ' &', file=fp)
             print('\n', file=fp)
 
 
