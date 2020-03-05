@@ -100,7 +100,7 @@ def compute_convnet_out_size(in_size, layers):
         else:
             # This is meant to check that it's an elementwise operation, but I
             # was too lazy to add all the elementwise operations. Whatever.
-            assert isinstance(layer, nn.ReLU), \
+            assert isinstance(layer, (nn.ReLU, nn.BatchNorm2d)), \
                 f"is {layer} an elementwise op? If not then this function " \
                 f"will break."
     return size

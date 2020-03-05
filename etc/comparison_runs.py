@@ -47,7 +47,6 @@ def gen_command(expts, run_name, n_epochs, gpu_idx=0):
         'train',
         '--run-name',
         run_name,
-        '--use-gpu',
         '--epochs',
         str(n_epochs),
         '--eval-n-traj',
@@ -93,35 +92,57 @@ def gen_all_expts():
     # these will all have GPU 0, so I need to change things once I have the
     # shell script. (another reminder: there are 20 passes through the dataset
     # for each 'eval')
+    name_opt_combos = [
+        ('w1-no-bn', ['--net-width-mul', '1', '--no-net-use-bn']),
+        ('w2-no-bn', ['--net-width-mul', '2', '--no-net-use-bn']),
+        ('w4-no-bn', ['--net-width-mul', '4', '--no-net-use-bn']),
+        ('w2-bn', ['--net-width-mul', '2', '--net-use-bn']),
+    ]
     gpu_itr = itertools.cycle(range(NUM_GPUS))
     date = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M')
-    mt_run_name = f"multi-task-bc-{date}"
-    mt_cmd = gen_command(
+
+    mt_run_names = []
+    st_run_names = []
+    mt_cmds = []
+    st_cmds = []
+    for opt_name, extra_opts in name_opt_combos:
+        # multi-task training (x 1)
+        mt_run_name = f"multi-task-bc-{opt_name}-{date}"
+        mt_run_names.append(mt_run_name)
+        mt_cmd = gen_command(
             sorted(DEMO_PATH_PATTERNS.keys()), mt_run_name, 30,
-            gpu_idx=next(gpu_itr))
-    st_run_names = {
-        task: f"single-task-bc-{task}-{date}"
-        for task in sorted(DEMO_PATH_PATTERNS.keys())
-    }
-    st_cmds = sorted([
-        gen_command([task], run_name, 30, gpu_idx=next(gpu_itr))
-        for task, run_name in st_run_names.items()
-    ])
-    train_cmds = [mt_cmd, *st_cmds]
+            gpu_idx=next(gpu_itr)) + extra_opts
+        mt_cmds.append(mt_cmd)
+
+    for task in DEMO_PATH_PATTERNS.keys():
+        # single-task training (x num_envs)
+        for opt_name, extra_opts in name_opt_combos:
+            new_st_run_name = (task, f"single-task-bc-{task}-{opt_name}-{date}")
+            st_run_names.append(new_st_run_name)
+            new_st_cmd = gen_command(
+                [task], new_st_run_name[1], 30, gpu_idx=next(gpu_itr)) + extra_opts
+            st_cmds.append(new_st_cmd)
+
+    train_cmds = [*mt_cmds, *st_cmds]
 
     # test CMDs will write problem data to a problem-specific dataframe, then
     # combine the frames into a plot later on
     target_itrs = [29]
     eval_cmds = []
+    # single-task eval runs (one per env)
+    # TODO: add GPUs to these eval runs
     for itr in target_itrs:
-        for env_shorthand, run_name in st_run_names.items():
+        for env_shorthand, run_name in st_run_names:
             env_name = ENV_NAMES[env_shorthand]
             new_cmd = make_eval_cmd(run_name, env_shorthand, env_name, itr)
             eval_cmds.append(new_cmd)
+    # multi-task eval runs (one eval run per env, even though there was only
+    # one multi-task training run shared across all envs)
     for itr in target_itrs:
         for env_shorthand, env_name in ENV_NAMES.items():
-            new_cmd = make_eval_cmd(mt_run_name, env_shorthand, env_name, itr)
-            eval_cmds.append(new_cmd)
+            for mt_run_name in mt_run_names:
+                new_cmd = make_eval_cmd(mt_run_name, env_shorthand, env_name, itr)
+                eval_cmds.append(new_cmd)
 
     return [*train_cmds, *eval_cmds]
 
@@ -140,7 +161,7 @@ def main():
     ]
     print("Writing commands to commands.sh")
     with open("commands.sh", "w") as fp:
-        print("#!/bin/env bash\n", file=fp)
+        print("#!/usr/bin/env bash\n", file=fp)
         for line in expt_commands:
             print(line + ' &', file=fp)
             print('\n', file=fp)
