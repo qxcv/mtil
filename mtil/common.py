@@ -390,6 +390,7 @@ def make_logger_ctx(out_dir,
     logger.set_snapshot_gap(snapshot_gap)
     log_dir = os.path.abspath(out_dir)
     # this is irrelevant so long as it's a prefix of log_dir
+    # FIXME: update rlpyt so that I can remove this LOG_DIR kludge.
     log_ctx.LOG_DIR = log_dir
     os.makedirs(out_dir, exist_ok=True)
     return log_ctx.logger_context(out_dir,

@@ -159,11 +159,26 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
     opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
 
     n_uniq_envs = len(env_ids_and_names)
+    log_params = {
+        'n_uniq_envs': n_uniq_envs,
+        'n_demos': len(demos),
+        'net_use_bn': net_use_bn,
+        'net_width_mul': net_width_mul,
+        'seed': seed,
+        'eval_n_traj': eval_n_traj,
+        'passes_per_eval': passes_per_eval,
+        'omit_noop': omit_noop,
+        'batch_size': batch_size,
+        'epochs': epochs,
+        'snapshot_gap': snapshot_gap,
+        'add_preproc': add_preproc,
+    }
     with make_logger_ctx(out_dir,
                          "mtbc",
                          f"mt{n_uniq_envs}",
                          run_name,
-                         snapshot_gap=snapshot_gap):
+                         snapshot_gap=snapshot_gap,
+                         log_params=log_params):
         # initial save
         torch.save(model_mt,
                    os.path.join(logger.get_snapshot_dir(), 'full_model.pt'))
@@ -177,8 +192,8 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
             loss_ewma, losses, per_task_losses = do_epoch_training_mt(
                 loader_mt, model_mt, opt_mt, dev, passes_per_eval)
 
-            #  TODO: record accuracy on a subset of the train and validation
-            #  sets (in eval mode, not train mode)
+            # TODO: record accuracy on a random subset of the train and
+            # validation sets (both in eval mode, not train mode)
 
             print(f"Evaluating {eval_n_traj} trajectories on "
                   f"{len(name_pairs)} envs")
@@ -208,6 +223,9 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                     'model_state': model_mt.state_dict(),
                     'opt_state': opt_mt.state_dict(),
                 })
+
+    for sampler in samplers:
+        sampler.shutdown()
 
 
 @cli.command()
@@ -276,6 +294,7 @@ def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
         env.viewer.close()
 
 
+# TODO: factor this out into mtbc.py
 class MTBCEvalProtocol(EvaluationProtocol):
     def __init__(self, ft_wrapper, run_id, seed, det_pol, **kwargs):
         super().__init__(**kwargs)
@@ -300,6 +319,10 @@ class MTBCEvalProtocol(EvaluationProtocol):
         # env_hash_digest = hashlib.md5(env_name.encode('utf8')).digest()
         # env_seed = struct.unpack('>I', env_hash_digest[:4])
         # env.seed(self.seed ^ env_seed)
+
+        # TODO: use a CpuSampler or GpuSampler (as appropriate) to collect
+        # these trajectories in parallel. Can just use eval_model & the other
+        # code from train() command TBH.
 
         scores = []
         for _ in range(self.n_rollouts):

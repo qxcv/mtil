@@ -155,4 +155,4 @@ def eval_model(sampler, itr, n_traj=10):
         dones = samples_pyt.env.done
         done_scores = eval_scores.flatten()[dones.flatten()]
         scores.extend(done_scores)
-    return scores
+    return scores[:n_traj]
