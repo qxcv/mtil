@@ -76,14 +76,11 @@ class MILBenchDiscriminator(nn.Module):
         self.preproc = MILBenchPreprocLayer()
         # feature extractor gives us 1024-dim features
         self.feature_extractor = MILBenchFeatureNetwork(
-            in_chans=in_chans, ActivationCls=ActivationCls)
-        # the logit generator takes in *both* the 1024-dim features *and* the
+            in_chans=in_chans, out_chans=256, ActivationCls=ActivationCls)
+        # the logit generator takes in both the image features and the
         # act_dim-dimensional action (probably just a one-hot vector)
         self.logit_generator = nn.Sequential(
-            nn.Linear(576 + act_dim, 256),
-            ActivationCls(),
-            # now: flat 256-elem vector
-            nn.Linear(256, 256),
+            nn.Linear(256 + act_dim, 256),
             ActivationCls(),
             # now: flat 256-elem vector
             nn.Linear(256, 1),

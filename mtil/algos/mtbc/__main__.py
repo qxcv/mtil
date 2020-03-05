@@ -48,6 +48,10 @@ def cli():
 @click.option("--omit-noop/--no-omit-noop",
               default=True,
               help="omit demonstration (s,a) pairs whenever a is a noop")
+@click.option("--net-width-mul", default=2, help="width multiplier for net")
+@click.option("--net-use-bn/--no-net-use-bn",
+              default=False,
+              help="use batch norm in net?")
 # set this to some big value if training on perceptron or something
 @click.option(
     "--passes-per-eval",
@@ -58,12 +62,13 @@ def cli():
               help="how many evals to wait for before saving snapshot")
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
-          gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop):
+          gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop,
+          net_width_mul, net_use_bn):
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
     # loading should be simplified by having a single class that can provide
     # whatever form of data the current IL method needs, without having to do
-    # unnecessary copies in memory.
+    # unnecessary copies in memory. Maybe also just use Sacred, because YOLO.
 
     # set up seeds & devices
     set_seeds(seed)
@@ -77,6 +82,8 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
 
     # TODO: maybe make this a class so that I don't have to pass around a
     # zillion attrs and use ~5 lines just to load some demos?
+    # TODO: split out part of the dataset for validation. (IDK whether to do
+    # this trajectory-wise or what)
     dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
         = load_demos_mt(demos, add_preproc, omit_noop=omit_noop)
     loader_mt = make_loader_mt(dataset_mt, batch_size)
@@ -111,8 +118,11 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                 'env_ids_and_names': env_ids_and_names,
                 'in_chans': in_chans,
                 'n_actions': n_actions,
+                'use_bn': net_use_bn,
+                'width': net_width_mul,
             }
 
+        # TODO: make this a parallel sampler. Just use CpuSampler or some shit.
         env_sampler = SerialSampler(env_ctor,
                                     env_ctor_kwargs,
                                     batch_T=max_steps,
@@ -129,7 +139,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         samplers.append(env_sampler)
         agents.append(env_agent)
 
-    model_mt = MultiHeadPolicyNet(**model_kwargs).to(dev)
+    model_mt = model_ctor(**model_kwargs).to(dev)
     opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
 
     n_uniq_envs = len(env_ids_and_names)

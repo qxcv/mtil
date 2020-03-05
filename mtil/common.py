@@ -7,6 +7,7 @@ import os
 import random
 import sys
 import uuid
+import warnings
 
 import click
 import gym
@@ -49,41 +50,156 @@ class MILBenchPreprocLayer(nn.Module):
         return x
 
 
+def _pair(maybe_tup):
+    # turn either a pair of integers or a single integer into a pair of
+    # integers
+    if len(maybe_tup) == 2:
+        return maybe_tup
+    # force cast to int
+    value = int(maybe_tup)
+    assert value == maybe_tup, (value, maybe_tup)
+    return (value, value)
+
+
+def _conv_out_d(d, kernel_size=1, stride=1, padding=0, dilation=1):
+    numerator = d + 2 * padding - dilation * (kernel_size - 1) - 1
+    return int(np.floor(numerator / stride + 1))
+
+
+def conv_out_hw(hw, kernel_size=(1, 1), stride=1, padding=0, dilation=1):
+    # Return (h',w') for input feature map of size (h,w) after convolution with
+    # something that has given parameters. Formula taken from
+    # https://pytorch.org/docs/stable/nn.html#torch.nn.Conv2d
+    kernel_size = _pair(kernel_size)
+    stride = _pair(stride)
+    padding = _pair(padding)
+    dilation = _pair(dilation)
+    h_in, w_in = hw
+    h_out = _conv_out_d(h_in,
+                        kernel_size=kernel_size[0],
+                        stride=stride[0],
+                        padding=padding[0],
+                        dilation=dilation[0])
+    w_out = _conv_out_d(w_in,
+                        kernel_size=kernel_size[1],
+                        stride=stride[1],
+                        padding=padding[1],
+                        dilation=dilation[1])
+    return h_out, w_out
+
+
+def compute_convnet_out_size(in_size, layers):
+    size = in_size
+    for layer in layers:
+        if isinstance(layer, nn.Conv2d):
+            size = conv_out_hw(size,
+                               kernel_size=layer.kernel_size,
+                               stride=layer.stride,
+                               padding=layer.padding,
+                               dilation=layer.dilation)
+        else:
+            # This is meant to check that it's an elementwise operation, but I
+            # was too lazy to add all the elementwise operations. Whatever.
+            assert isinstance(layer, nn.ReLU), \
+                f"is {layer} an elementwise op? If not then this function " \
+                f"will break."
+    return size
+
+
 class MILBenchFeatureNetwork(nn.Module):
     """Convolutional feature extractor to process 128x128 images down into
     1024-dimensional feature vectors."""
-    def __init__(self, in_chans=3, ActivationCls=torch.nn.ReLU):
+    def __init__(self,
+                 in_chans,
+                 out_chans,
+                 use_bn=False,
+                 width=2,
+                 ActivationCls=torch.nn.ReLU):
         super().__init__()
-        self.feature_generator = nn.Sequential(
-            # TODO: consider adding batch norm, skip layers, etc. to this
-            # at input: (128, 128)
-            nn.Conv2d(in_chans, 64, kernel_size=5, stride=1),
+        w = width
+        # Batch norm after conv has its own bias, so disable as necessary.
+        # Undecide on what the best padding is. May have to experiment. I
+        # suspect 'replicate' will make it less likely to pick up on absolute
+        # position.
+        conv_kwargs = dict(bias=not use_bn, padding_mode='zeros')
+        conv_layers = [
+            # at input: (96, 96)
+            nn.Conv2d(in_chans,
+                      32 * w,
+                      kernel_size=5,
+                      stride=1,
+                      padding=2,
+                      **conv_kwargs),
             ActivationCls(),
-            # now: (124, 124)
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            # now: (96, 96)
+            nn.Conv2d(32 * w,
+                      64 * w,
+                      kernel_size=3,
+                      stride=2,
+                      padding=1,
+                      **conv_kwargs),
             ActivationCls(),
-            # now: (64, 64)
-            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            # now: (48, 48)
+            nn.Conv2d(64 * w,
+                      64 * w,
+                      kernel_size=3,
+                      stride=2,
+                      padding=1,
+                      **conv_kwargs),
             ActivationCls(),
-            # now: (32, 32)
-            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            # now: (24, 24)
+            nn.Conv2d(64 * w,
+                      64 * w,
+                      kernel_size=3,
+                      stride=2,
+                      padding=1,
+                      **conv_kwargs),
             ActivationCls(),
-            # now: (16, 16)
-            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            # now: (12, 12)
+            # TODO: a 12x12 feature map is a good place for attention :)
+            # (maybe a bit big; I'd prefer 8x8)
+            nn.Conv2d(64 * w,
+                      32 * w,
+                      kernel_size=3,
+                      stride=2,
+                      padding=1,
+                      **conv_kwargs),
             ActivationCls(),
-            # now (8, 8)
-            nn.Conv2d(128, 64, kernel_size=3, stride=2, padding=1),
+            # now (6,6)
+        ]
+
+        # add BN if appropriate
+        if use_bn:
+            new_conv_layers = []
+            for layer in conv_layers:
+                new_conv_layers.append(layer)
+                if isinstance(layer, nn.Conv2d):
+                    # insert a BN layer right after each convolution
+                    new_conv_layers.append(nn.BatchNorm2d(layer.out_channels))
+            conv_layers = new_conv_layers
+
+        # final FC layer to make feature maps the right size
+        out_size = compute_convnet_out_size((96, 96), conv_layers)
+        fc_in_size = np.prod(out_size) * 32 * w
+        if fc_in_size >= 10 * out_chans:
+            # warn if we have a huge input to the last layer
+            # (I chose the size threshold arbitrarily)
+            warnings.warn(
+                f"Output of conv layers in {type(self)} is of size "
+                f"{fc_in_size}, but only {out_chans} channels will be "
+                f"produced after final FC layer. Is the network too wide for "
+                f"the task?")
+        reduction_layers = [
+            nn.Flatten(),
+            # now: (6*6*32*w,)=(1152*w,)
+            nn.Linear(fc_in_size, out_chans),
             ActivationCls(),
-            # now (4, 4), 64 channels, for 16*64=1024 elements total
-            # nn.Flatten(),
-            # finally: flat 1024-elem vector
-            # EDIT 2020-01-13: removing Flatten() layer & doing flattening
-            # manually for Torch 1.2 compat.
-        )
+            # now: (out_chans,)
+        ]
+        self.feature_generator = nn.Sequential(*conv_layers, *reduction_layers)
 
     def forward(self, x):
-        nonflat_feats = self.feature_generator(x)
-        flat_feats = nonflat_feats.view(nonflat_feats.shape[:1] + (-1, ))
+        flat_feats = self.feature_generator(x)
         return flat_feats
 
 
@@ -137,27 +253,30 @@ class MultiHeadPolicyNet(nn.Module):
                  env_ids_and_names,
                  in_chans=3,
                  n_actions=3 * 3 * 2,
-                 fc_dim=256,
+                 width=2,
+                 use_bn=False,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
         self.preproc = MILBenchPreprocLayer()
+        fc_dim = 128 * width
         self.feature_extractor = MILBenchFeatureNetwork(
-            in_chans=in_chans, ActivationCls=ActivationCls)
-        self.fc_postproc = nn.Sequential(
-            nn.Linear(576, fc_dim),
-            ActivationCls(),
-            # now: flat <fc_dim>-elem vector
-            nn.Linear(fc_dim, fc_dim),
-            ActivationCls(),
-            # now: flat <fc_dim>-elem vector
-        )
+            in_chans=in_chans,
+            out_chans=fc_dim,
+            use_bn=use_bn,
+            width=width,
+            ActivationCls=ActivationCls)
+        # TODO: Maybe I should scale the output width of the layer by the
+        # number of tasks? IDK whether width of the network needs to increase
+        # with task count.
+        self.fc_postproc = nn.Sequential(nn.Linear(fc_dim, fc_dim),
+                                         ActivationCls())
         # this produces both a single value output and a vector of policy
         # logits for each sample
         self.mt_fc_layer = MultiTaskAffineLayer(fc_dim, n_actions + 1,
                                                 len(env_ids_and_names))
 
         # save env IDs and names so that we know how to reconstruct, as well as
-        # fc_dim and n_actionsso that we can do reshaping
+        # fc_dim and n_actions so that we can do reshaping
         self.env_ids_and_names = sorted(env_ids_and_names)
         self.fc_dim = fc_dim
         self.n_actions = n_actions
