@@ -16,6 +16,7 @@ import torch
 from mtil.algos.mtbc.mtbc import (copy_model_into_sampler,
                                   do_epoch_training_mt, eval_model,
                                   load_state_dict_or_model, make_env_tag,
+                                  saved_model_loader_ft,
                                   wrap_model_for_fixed_task)
 from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
                          MultiHeadPolicyNet, load_demos_mt, make_loader_mt,
@@ -296,12 +297,16 @@ def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
 
 # TODO: factor this out into mtbc.py
 class MTBCEvalProtocol(EvaluationProtocol):
-    def __init__(self, ft_wrapper, run_id, seed, det_pol, **kwargs):
-        super().__init__(**kwargs)
-        self.ft_wrapper = ft_wrapper
+    def __init__(self, demo_env_name, state_dict_or_model_path, run_id, seed,
+                 gpu_idx, affinity, batch_size, **kwargs):
+        super().__init__(demo_env_name=demo_env_name, **kwargs)
         self._run_id = run_id
         self.seed = seed
-        self.det_pol = det_pol
+        self.gpu_idx = gpu_idx
+        self.affinity = affinity
+        self.batch_size = batch_size
+        self.demo_env_name = demo_env_name
+        self.state_dict_or_model_path = state_dict_or_model_path
 
     @property
     def run_id(self):
@@ -310,42 +315,40 @@ class MTBCEvalProtocol(EvaluationProtocol):
     def obtain_scores(self, env_name):
         print(f"Testing on {env_name}")
 
+        use_gpu = self.gpu_idx is not None
+        if use_gpu:
+            SamplerCls = GpuSampler
+        else:
+            SamplerCls = CpuSampler
+
+        env_ctor = MILBenchGymEnv
+        env_ctor_kwargs = dict(env_name=env_name)
         env = gym.make(env_name)
-        # use same seed for each instantiated test env (maybe this is a bad
-        # idea? IDK.)
-        rng = np.random.RandomState(self.seed)
-        env.seed(rng.randint(0, 1 << 31 - 1))
-        # alternative:
-        # env_hash_digest = hashlib.md5(env_name.encode('utf8')).digest()
-        # env_seed = struct.unpack('>I', env_hash_digest[:4])
-        # env.seed(self.seed ^ env_seed)
-
-        # TODO: use a CpuSampler or GpuSampler (as appropriate) to collect
-        # these trajectories in parallel. Can just use eval_model & the other
-        # code from train() command TBH.
-
-        scores = []
-        for _ in range(self.n_rollouts):
-            act_range = np.arange(env.action_space.n)
-            obs = env.reset()
-            done = False
-            while not done:
-                torch_obs = torch.from_numpy(obs)
-                with torch.no_grad():
-                    (pi_torch, ), _ = self.ft_wrapper(torch_obs[None], None,
-                                                      None)
-                    pi = pi_torch.cpu().numpy()
-                if self.det_pol:
-                    action = np.argmax(pi)
-                else:
-                    pi = pi / sum(pi)
-                    action = rng.choice(act_range, p=pi)
-                obs, rew, done, info = env.step(action)
-                obs = np.asarray(obs)
-                if done:
-                    scores.append(info['eval_score'])
-
+        max_steps = env.spec.max_episode_steps
         env.close()
+        del env
+
+        env_sampler = SamplerCls(env_ctor,
+                                 env_ctor_kwargs,
+                                 batch_T=max_steps,
+                                 # don't decorrelate, it will fuck up the
+                                 # scores
+                                 max_decorrelation_steps=0,
+                                 batch_B=min(self.n_rollouts, self.batch_size))
+        env_agent = CategoricalPgAgent(
+            ModelCls=saved_model_loader_ft,
+            model_kwargs=dict(
+                state_dict_or_model_path=self.state_dict_or_model_path,
+                env_name=self.demo_env_name))
+        env_sampler.initialize(env_agent,
+                               seed=self.seed,
+                               affinity=self.affinity)
+        dev = torch.device(["cpu", f"cuda:{self.gpu_idx}"][use_gpu])
+        env_agent.to_device(dev.index if use_gpu else None)
+        try:
+            scores = eval_model(env_sampler, 0, self.n_rollouts)
+        finally:
+            env_sampler.shutdown()
 
         return scores
 
@@ -354,11 +357,10 @@ class MTBCEvalProtocol(EvaluationProtocol):
 @click.option("--env-name",
               default="MoveToCorner-Demo-LoResStack-v0",
               help="name of env to get policy for")
-@click.option("--det-pol/--no-det-pol",
-              default=False,
-              help="should actions be sampled deterministically?")
-# @click.option("--use-gpu/--no-use-gpu", default=False, help="use GPU")
-# @click.option("--gpu-idx", default=0, help="index of GPU to use")
+# @click.option("--det-pol/--no-det-pol",
+#               default=False,
+#               help="should actions be sampled deterministically?")
+@click.option("--gpu-idx", default=None, help="index of GPU to use (if any)")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--fps",
               default=None,
@@ -381,9 +383,11 @@ class MTBCEvalProtocol(EvaluationProtocol):
 @click.option("--n-rollouts",
               default=10,
               help="number of rollouts to execute in each test config")
+@click.option("--batch-size", default=32, help="batch size for eval")
 @click.argument('state_dict_or_model_path')
-def testall(state_dict_or_model_path, env_name, det_pol, seed, fps,
-            write_latex, latex_alg_name, n_rollouts, run_id, write_csv):
+def testall(state_dict_or_model_path, env_name, seed, fps, write_latex,
+            latex_alg_name, n_rollouts, run_id, write_csv, gpu_idx,
+            batch_size):
     """Run quantitative evaluation on all test variants of a given
     environment."""
     # TODO: is there some way of factoring this init code out? Maybe put into
@@ -392,18 +396,30 @@ def testall(state_dict_or_model_path, env_name, det_pol, seed, fps,
     import milbench
     milbench.register_envs()
 
-    model = load_state_dict_or_model(state_dict_or_model_path)
-    ft_wrapper = wrap_model_for_fixed_task(model, env_name)
+    # for parallel GPU/CPU sampling
+    mp.set_start_method('spawn')
+    use_gpu = gpu_idx is not None and torch.cuda.is_available()
+    dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
+    print(f"Using device {dev}, seed {seed}")
+    cpu_count = mp.cpu_count()
+    n_workers = max(1, cpu_count // 2)
+    affinity = dict(cuda_idx=gpu_idx if use_gpu else None,
+                    workers_cpus=list(range(n_workers)))
 
     if run_id is None:
         run_id = state_dict_or_model_path
 
-    eval_protocol = MTBCEvalProtocol(ft_wrapper=ft_wrapper,
-                                     seed=seed,
-                                     det_pol=det_pol,
-                                     run_id=run_id,
-                                     demo_env_name=env_name,
-                                     n_rollouts=n_rollouts)
+    eval_protocol = MTBCEvalProtocol(
+        demo_env_name=env_name,
+        state_dict_or_model_path=state_dict_or_model_path,
+        seed=seed,
+        # det_pol=det_pol,
+        run_id=run_id,
+        gpu_idx=gpu_idx,
+        affinity=affinity,
+        n_rollouts=n_rollouts,
+        batch_size=batch_size,
+    )
 
     # next bit copied from testall() in bc.py
     frame = eval_protocol.do_eval(verbose=True)

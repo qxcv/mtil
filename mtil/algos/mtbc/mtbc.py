@@ -156,3 +156,11 @@ def eval_model(sampler, itr, n_traj=10):
         done_scores = eval_scores.flatten()[dones.flatten()]
         scores.extend(done_scores)
     return scores[:n_traj]
+
+
+def saved_model_loader_ft(state_dict_or_model_path, env_name):
+    """Loads a saved policy model and then wraps it in a
+    FixedTaskModelWrapper."""
+    model = load_state_dict_or_model(state_dict_or_model_path)
+    ft_wrapper = wrap_model_for_fixed_task(model, env_name)
+    return ft_wrapper
