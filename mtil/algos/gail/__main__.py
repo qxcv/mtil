@@ -77,12 +77,12 @@ def cli():
 @click.option("--total-n-steps",
               default=4e6,
               help="total number of steps to take in environment")
-@click.option("--bc-loss", default=0.1, help="behavioural cloning loss coeff")
+@click.option("--bc-loss", default=0.01, help="behavioural cloning loss coeff")
 @click.option("--run-name",
               default=None,
               type=str,
               help="unique name for this run")
-@click.option("--snapshot-gap", default=10, help="evals between snapshots")
+@click.option("--snapshot-gap", default=1, help="evals between snapshots")
 @click.option("--load-policy",
               default=None,
               type=str,
