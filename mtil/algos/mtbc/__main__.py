@@ -54,7 +54,7 @@ def cli():
               help="omit demonstration (s,a) pairs whenever a is a noop")
 @click.option("--net-width-mul", default=2, help="width multiplier for net")
 @click.option("--net-use-bn/--no-net-use-bn",
-              default=False,
+              default=True,
               help="use batch norm in net?")
 @click.option("--aug-mode",
               type=click.Choice(
