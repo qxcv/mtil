@@ -64,7 +64,7 @@ def gen_command(expts, run_name, n_epochs, gpu_idx=0):
     return cmd_parts
 
 
-def make_eval_cmd(run_name, env_shorthand, env_name, itr):
+def make_eval_cmd(run_name, env_shorthand, env_name, itr, gpu_idx):
     run_dir = f'./scratch/run_{run_name}'
     new_cmd = [
         "xvfb-run",
@@ -84,6 +84,8 @@ def make_eval_cmd(run_name, env_shorthand, env_name, itr):
         f"{run_dir}/eval_{itr}.csv",
         "--n-rollouts",
         "30",
+        "--gpu-idx",
+        str(gpu_idx),
     ]
     return new_cmd
 
@@ -134,14 +136,18 @@ def gen_all_expts():
     for itr in target_itrs:
         for env_shorthand, run_name in st_run_names:
             env_name = ENV_NAMES[env_shorthand]
-            new_cmd = make_eval_cmd(run_name, env_shorthand, env_name, itr)
+            new_cmd = make_eval_cmd(
+                run_name, env_shorthand, env_name, itr=itr,
+                gpu_idx=next(gpu_itr))
             eval_cmds.append(new_cmd)
     # multi-task eval runs (one eval run per env, even though there was only
     # one multi-task training run shared across all envs)
     for itr in target_itrs:
         for env_shorthand, env_name in ENV_NAMES.items():
             for mt_run_name in mt_run_names:
-                new_cmd = make_eval_cmd(mt_run_name, env_shorthand, env_name, itr)
+                new_cmd = make_eval_cmd(
+                    mt_run_name, env_shorthand, env_name, itr=itr,
+                    gpu_idx=next(gpu_itr))
                 eval_cmds.append(new_cmd)
 
     return [*train_cmds, *eval_cmds]
