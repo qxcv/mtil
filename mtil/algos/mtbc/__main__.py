@@ -180,7 +180,8 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         raise ValueError(f"unsupported mode '{aug_mode}'")
     if aug_opts:
         print("Augmentations:", ", ".join(aug_opts))
-        aug_model = MILBenchAugmentations(**{k: True for k in aug_opts})
+        aug_model = MILBenchAugmentations(**{k: True for k in aug_opts}) \
+            .to(dev)
     else:
         print("No augmentations")
         aug_model = None

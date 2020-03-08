@@ -25,15 +25,13 @@ class KorniaAugmentations(nn.Module):
     make all images [C,H,W] floats during loading. There will be a 4x memory
     cost, but might save on compute (especially the permute ops, which
     suck)."""
-
     def __init__(self, *kornia_ops):
         super().__init__()
         self.kornia_ops = nn.Sequential(*kornia_ops)
 
     def forward(self, byte_tensor):
         # check type & number of dims
-        assert byte_tensor.type().split('.')[-1] == 'ByteTensor', \
-            byte_tensor.type()
+        assert byte_tensor.dtype == torch.uint8, byte_tensor.dtype
         assert byte_tensor.dim() >= 4, byte_tensor.shape
         # make sure this is a channels-last stack of RGB images
         stack_depth = byte_tensor.size(-1) // 3
@@ -79,7 +77,6 @@ class KorniaAugmentations(nn.Module):
 class GaussianNoise(nn.Module):
     """Apply zero-mean Gaussian noise with a given standard deviation to input
     tensor."""
-
     def __init__(self, std):
         super().__init__()
         self.std = std
@@ -93,7 +90,6 @@ class GaussianNoise(nn.Module):
 class MILBenchAugmentations(KorniaAugmentations):
     """Convenience class for data augmentation. Has a standard set of possible
     augmentations with sensible pre-set values."""
-
     def __init__(self,
                  colour_jitter=False,
                  translate=False,
@@ -102,14 +98,15 @@ class MILBenchAugmentations(KorniaAugmentations):
         transforms = []
         if colour_jitter:
             transforms.append(
-                aug.ColorJitter(
-                    brightness=0.05, contrast=0.05, saturation=0.05, hue=0.01))
+                aug.ColorJitter(brightness=0.05,
+                                contrast=0.05,
+                                saturation=0.05,
+                                hue=0.01))
         if translate or rotate:
             transforms.append(
-                    aug.RandomAffine(
-                        degrees=(-5, 5) if rotate else (0, 0),
-                        translate=(0.05, 0.05) if translate else None,
-                        border_mode='border'))
+                aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),
+                                 translate=(0.05, 0.05) if translate else None,
+                                 border_mode='border'))
         if noise:
             # Remember that values lie in [0,1], so std=0.01 (for example)
             # means there's a >99% chance that any given noise value will lie
