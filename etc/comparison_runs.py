@@ -19,7 +19,7 @@ ENV_NAMES = {
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 # IDK why I thought this was a better idea than "python -m mtil.algos.mtbc"
-MAIN_FILE = os.path.join(THIS_DIR, 'mtil/algos/mtbc/__main__.py')
+MAIN_FILE = os.path.abspath(os.path.join(THIS_DIR, '../mtil/algos/mtbc/__main__.py'))
 NUM_GPUS = 4
 
 
@@ -95,10 +95,10 @@ def gen_all_expts():
     # shell script. (another reminder: there are 20 passes through the dataset
     # for each 'eval')
     name_opt_combos = [
-        ('w1-no-bn', ['--net-width-mul', '1', '--no-net-use-bn']),
-        ('w2-no-bn', ['--net-width-mul', '2', '--no-net-use-bn']),
-        ('w4-no-bn', ['--net-width-mul', '4', '--no-net-use-bn']),
-        ('w2-bn', ['--net-width-mul', '2', '--net-use-bn']),
+        ('aug-none', ['--aug-mode', 'none']),
+        ('aug-recol', ['--aug-mode', 'recol']),
+        ('aug-trans', ['--aug-mode', 'trans']),
+        ('aug-noise', ['--aug-mode', 'noise']),
     ]
     gpu_itr = itertools.cycle(range(NUM_GPUS))
     date = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M')
