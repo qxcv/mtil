@@ -18,6 +18,7 @@ from mtil.algos.mtbc.mtbc import (copy_model_into_sampler,
                                   load_state_dict_or_model, make_env_tag,
                                   saved_model_loader_ft,
                                   wrap_model_for_fixed_task)
+from mtil.augmentation import MILBenchAugmentations
 from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
                          MultiHeadPolicyNet, load_demos_mt, make_loader_mt,
                          make_logger_ctx, set_seeds)
@@ -55,6 +56,11 @@ def cli():
 @click.option("--net-use-bn/--no-net-use-bn",
               default=False,
               help="use batch norm in net?")
+@click.option("--aug-mode",
+              type=click.Choice(
+                  ["none", "recol", "trans", "rot", "noise", "all"]),
+              default="none",
+              help="augmentations to use")
 # set this to some big value if training on perceptron or something
 @click.option(
     "--passes-per-eval",
@@ -66,7 +72,7 @@ def cli():
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
           gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop,
-          net_width_mul, net_use_bn):
+          net_width_mul, net_use_bn, aug_mode):
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
     # loading should be simplified by having a single class that can provide
@@ -159,12 +165,33 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
     model_mt = model_ctor(**model_kwargs).to(dev)
     opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
 
+    aug_opts = []
+    if aug_mode == 'all':
+        aug_opts.extend(['colour_jitter', 'translate', 'rotate', 'noise'])
+    elif aug_mode == 'recol':
+        aug_opts.append('colour_jitter')
+    elif aug_mode == 'trans':
+        aug_opts.append('translate')
+    elif aug_mode == 'rot':
+        aug_opts.append('rotate')
+    elif aug_mode == 'noise':
+        aug_opts.append('noise')
+    elif aug_mode != 'none':
+        raise ValueError(f"unsupported mode '{aug_mode}'")
+    if aug_opts:
+        print("Augmentations:", ", ".join(aug_opts))
+        aug_model = MILBenchAugmentations(**{k: True for k in aug_opts})
+    else:
+        print("No augmentations")
+        aug_model = None
+
     n_uniq_envs = len(env_ids_and_names)
     log_params = {
         'n_uniq_envs': n_uniq_envs,
         'n_demos': len(demos),
         'net_use_bn': net_use_bn,
         'net_width_mul': net_width_mul,
+        'aug_mode': aug_mode,
         'seed': seed,
         'eval_n_traj': eval_n_traj,
         'passes_per_eval': passes_per_eval,
@@ -191,7 +218,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
 
             model_mt.train()
             loss_ewma, losses, per_task_losses = do_epoch_training_mt(
-                loader_mt, model_mt, opt_mt, dev, passes_per_eval)
+                loader_mt, model_mt, opt_mt, dev, passes_per_eval, aug_model)
 
             # TODO: record accuracy on a random subset of the train and
             # validation sets (both in eval mode, not train mode)
@@ -328,13 +355,14 @@ class MTBCEvalProtocol(EvaluationProtocol):
         env.close()
         del env
 
-        env_sampler = SamplerCls(env_ctor,
-                                 env_ctor_kwargs,
-                                 batch_T=max_steps,
-                                 # don't decorrelate, it will fuck up the
-                                 # scores
-                                 max_decorrelation_steps=0,
-                                 batch_B=min(self.n_rollouts, self.batch_size))
+        env_sampler = SamplerCls(
+            env_ctor,
+            env_ctor_kwargs,
+            batch_T=max_steps,
+            # don't decorrelate, it will fuck up the
+            # scores
+            max_decorrelation_steps=0,
+            batch_B=min(self.n_rollouts, self.batch_size))
         env_agent = CategoricalPgAgent(
             ModelCls=saved_model_loader_ft,
             model_kwargs=dict(

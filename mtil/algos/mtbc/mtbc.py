@@ -29,7 +29,7 @@ def copy_model_into_sampler(model, sampler, prefix='model'):
     sampler.agent.model.eval()
 
 
-def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval):
+def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model):
     # @torch.jit.script
     def do_loss_forward_back(task_ids_batch, obs_batch, acts_batch):
         # we don't use the value output
@@ -56,6 +56,10 @@ def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval):
             obs_batch = obs_batch.to(dev)
             acts_batch = acts_batch.to(dev)
             task_ids_batch = task_ids_batch.to(dev)
+
+            if aug_model is not None:
+                # apply augmentations
+                obs_batch = aug_model(obs_batch)
 
             # compute loss & take opt step
             opt.zero_grad()

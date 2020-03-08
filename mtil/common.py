@@ -709,6 +709,7 @@ def save_normalised_image_tensor(image_tensor, file_name):
     assert torch.all((-1.1 <= flat_tensor) & (flat_tensor <= 1.1)), \
         f"this only takes normalised images, but range is " \
         f"[{flat_tensor.min()}, {flat_tensor.max()}]"
+    flat_tensor = torch.clamp(flat_tensor, -1., 1.)
     nrow = max(1, int(np.sqrt(flat_tensor.shape[0])))
     vutils.save_image(flat_tensor, file_name, nrow, range=(-1, 1))
 
