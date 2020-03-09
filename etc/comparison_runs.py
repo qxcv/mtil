@@ -19,7 +19,8 @@ ENV_NAMES = {
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 # IDK why I thought this was a better idea than "python -m mtil.algos.mtbc"
-MAIN_FILE = os.path.abspath(os.path.join(THIS_DIR, '../mtil/algos/mtbc/__main__.py'))
+MAIN_FILE = os.path.abspath(
+    os.path.join(THIS_DIR, '../mtil/algos/mtbc/__main__.py'))
 NUM_GPUS = 4
 
 
@@ -79,9 +80,9 @@ def make_eval_cmd(run_name, env_shorthand, env_name, itr, gpu_idx):
         "--run-id",
         f"{run_name}-on-{env_shorthand}-after-{itr+1}-epochs",
         "--write-latex",
-        f"{run_dir}/eval_{itr}.tex",
+        f"{run_dir}/eval-{env_shorthand}-{itr}.tex",
         "--write-csv",
-        f"{run_dir}/eval_{itr}.csv",
+        f"{run_dir}/eval-{env_shorthand}-{itr}.csv",
         "--n-rollouts",
         "30",
         "--gpu-idx",
@@ -111,18 +112,21 @@ def gen_all_expts():
         # multi-task training (x 1)
         mt_run_name = f"multi-task-bc-{opt_name}-{date}"
         mt_run_names.append(mt_run_name)
-        mt_cmd = gen_command(
-            sorted(DEMO_PATH_PATTERNS.keys()), mt_run_name, 30,
-            gpu_idx=next(gpu_itr)) + extra_opts
+        mt_cmd = gen_command(sorted(DEMO_PATH_PATTERNS.keys()),
+                             mt_run_name,
+                             30,
+                             gpu_idx=next(gpu_itr)) + extra_opts
         mt_cmds.append(mt_cmd)
 
     for task in DEMO_PATH_PATTERNS.keys():
         # single-task training (x num_envs)
         for opt_name, extra_opts in name_opt_combos:
-            new_st_run_name = (task, f"single-task-bc-{task}-{opt_name}-{date}")
+            new_st_run_name = (task,
+                               f"single-task-bc-{task}-{opt_name}-{date}")
             st_run_names.append(new_st_run_name)
             new_st_cmd = gen_command(
-                [task], new_st_run_name[1], 30, gpu_idx=next(gpu_itr)) + extra_opts
+                [task], new_st_run_name[1], 30, gpu_idx=next(gpu_itr)) \
+                + extra_opts
             st_cmds.append(new_st_cmd)
 
     train_cmds = [*mt_cmds, *st_cmds]
@@ -136,18 +140,22 @@ def gen_all_expts():
     for itr in target_itrs:
         for env_shorthand, run_name in st_run_names:
             env_name = ENV_NAMES[env_shorthand]
-            new_cmd = make_eval_cmd(
-                run_name, env_shorthand, env_name, itr=itr,
-                gpu_idx=next(gpu_itr))
+            new_cmd = make_eval_cmd(run_name,
+                                    env_shorthand,
+                                    env_name,
+                                    itr=itr,
+                                    gpu_idx=next(gpu_itr))
             eval_cmds.append(new_cmd)
     # multi-task eval runs (one eval run per env, even though there was only
     # one multi-task training run shared across all envs)
     for itr in target_itrs:
         for env_shorthand, env_name in ENV_NAMES.items():
             for mt_run_name in mt_run_names:
-                new_cmd = make_eval_cmd(
-                    mt_run_name, env_shorthand, env_name, itr=itr,
-                    gpu_idx=next(gpu_itr))
+                new_cmd = make_eval_cmd(mt_run_name,
+                                        env_shorthand,
+                                        env_name,
+                                        itr=itr,
+                                        gpu_idx=next(gpu_itr))
                 eval_cmds.append(new_cmd)
 
     return [*train_cmds, *eval_cmds]
