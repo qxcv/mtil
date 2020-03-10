@@ -63,8 +63,9 @@ def cli():
               default=False,
               help="enable (x,y) coordinate inputs for the policy conv layers")
 @click.option("--aug-mode",
-              type=click.Choice(
-                  ["none", "recol", "trans", "rot", "noise", "all"]),
+              type=click.Choice([
+                  "none", "recol", "trans", "rot", "transrot", "noise", "all"
+              ]),
               default="none",
               help="augmentations to use")
 # set this to some big value if training on perceptron or something
@@ -182,6 +183,8 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         aug_opts.append('translate')
     elif aug_mode == 'rot':
         aug_opts.append('rotate')
+    elif aug_mode == 'transrot':
+        aug_opts.extend(['translate', 'rotate'])
     elif aug_mode == 'noise':
         aug_opts.append('noise')
     elif aug_mode != 'none':

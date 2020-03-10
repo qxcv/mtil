@@ -48,11 +48,6 @@ class KorniaAugmentations(nn.Module):
             byte_tensor = byte_tensor.reshape((-1, ) + byte_tensor.shape[-3:])
             # permute to [N,C,H,W]
             byte_tensor = byte_tensor.permute((0, 3, 1, 2))
-            # reshape to [N*3,3,H,W]
-            lead_n = byte_tensor.size(0)
-            height_width = byte_tensor.shape[-2:]
-            byte_tensor = byte_tensor.reshape((lead_n * stack_depth, 3) +
-                                              height_width)
             # convert to float & put in range [0,1]
             float_tensor = byte_tensor.float() / 255
             del byte_tensor
@@ -63,15 +58,32 @@ class KorniaAugmentations(nn.Module):
             # convert back to byte
             out_tensor = torch.round(float_tensor * 255).byte()
             del float_tensor
-            # now reshape to [N,C,H,W]
-            out_tensor = out_tensor.reshape((lead_n, 3 * stack_depth) +
-                                            height_width)
             # permute back to [N,H,W,C]
             out_tensor = out_tensor.permute((0, 2, 3, 1))
             # restore leading dims
             out_tensor = out_tensor.reshape(lead_dims + out_tensor.shape[-3:])
 
         return out_tensor
+
+
+class UnstackWrapper(nn.Module):
+    """Wrapper layer for passing n-image RGB stacks to layers that only expect
+    batches of three-channel RGB layers. Takes in an [N,C,H,W] tensor, resizes
+    is to [N*C/3,3,H,W], passes that to given layer, then reshapes the result
+    back to [N,C',H,W]"""
+    def __init__(self, layer):
+        super().__init__()
+        self.layer = layer
+
+    def forward(self, x):
+        assert x.dim() == 4, x.shape
+        n, c, *rest = x.shape
+        assert c >= 0 and (c % 3) == 0, c
+        x_reshaped = x.reshape([n * c // 3, 3] + rest)
+        result_reshaped = self.layer(x_reshaped)
+        assert result_reshaped.shape[2:] == x.shape[2:]
+        result = result_reshaped.reshape(x.shape)
+        return result
 
 
 class GaussianNoise(nn.Module):
@@ -98,10 +110,11 @@ class MILBenchAugmentations(KorniaAugmentations):
         transforms = []
         if colour_jitter:
             transforms.append(
-                aug.ColorJitter(brightness=0.05,
-                                contrast=0.05,
-                                saturation=0.05,
-                                hue=0.01))
+                UnstackWrapper(
+                    aug.ColorJitter(brightness=0.05,
+                                    contrast=0.05,
+                                    saturation=0.05,
+                                    hue=0.01)))
         if translate or rotate:
             transforms.append(
                 aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),
