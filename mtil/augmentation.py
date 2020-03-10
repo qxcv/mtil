@@ -51,7 +51,7 @@ class KorniaAugmentations(nn.Module):
             # reshape to [N*3,3,H,W]
             lead_n = byte_tensor.size(0)
             height_width = byte_tensor.shape[-2:]
-            byte_tensor = byte_tensor.reshape((lead_n * stack_depth, 3, ) +
+            byte_tensor = byte_tensor.reshape((lead_n * stack_depth, 3) +
                                               height_width)
             # convert to float & put in range [0,1]
             float_tensor = byte_tensor.float() / 255

@@ -98,11 +98,15 @@ def compute_convnet_out_size(in_size, layers):
                                padding=layer.padding,
                                dilation=layer.dilation)
         else:
-            # This is meant to check that it's an elementwise operation, but I
-            # was too lazy to add all the elementwise operations. Whatever.
-            assert isinstance(layer, (nn.ReLU, nn.BatchNorm2d)), \
-                f"is {layer} an elementwise op? If not then this function " \
-                f"will break."
+            # This is meant to check that it's an op that doesn't change shape,
+            # but I was too lazy to add all the operations meeting that
+            # criterion. If you get an assertion error then you'll have to
+            # extend the tuple :)
+            known_shape_preserving_layers = (nn.ReLU, nn.BatchNorm2d,
+                                             nn.Dropout2d)
+            assert isinstance(layer, known_shape_preserving_layers), \
+                f"is {layer} a shape-preserving op? If not then this " \
+                f"function will break."
     return size
 
 
@@ -113,6 +117,7 @@ class MILBenchFeatureNetwork(nn.Module):
                  in_chans,
                  out_chans,
                  use_bn=False,
+                 dropout=None,
                  width=2,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
@@ -157,7 +162,7 @@ class MILBenchFeatureNetwork(nn.Module):
             ActivationCls(),
             # now: (12, 12)
             # TODO: a 12x12 feature map is a good place for attention :)
-            # (maybe a bit big; I'd prefer 8x8)
+            # (Maybe a bit big? Ask Dan to see what transformers use.)
             nn.Conv2d(64 * w,
                       32 * w,
                       kernel_size=3,
@@ -168,15 +173,19 @@ class MILBenchFeatureNetwork(nn.Module):
             # now (6,6)
         ]
 
-        # add BN if appropriate
-        if use_bn:
-            new_conv_layers = []
-            for layer in conv_layers:
-                new_conv_layers.append(layer)
-                if isinstance(layer, nn.Conv2d):
+        # add BN & channel-wise dropout if appropriate
+        new_conv_layers = []
+        for layer in conv_layers:
+            new_conv_layers.append(layer)
+            if isinstance(layer, nn.Conv2d):
+                if dropout:
+                    # assert a channel-wise dropout layer after each
+                    # convolution
+                    new_conv_layers.append(nn.Dropout2d(dropout))
+                if use_bn:
                     # insert a BN layer right after each convolution
                     new_conv_layers.append(nn.BatchNorm2d(layer.out_channels))
-            conv_layers = new_conv_layers
+        conv_layers = new_conv_layers
 
         # final FC layer to make feature maps the right size
         out_size = compute_convnet_out_size((96, 96), conv_layers)
@@ -196,6 +205,9 @@ class MILBenchFeatureNetwork(nn.Module):
             ActivationCls(),
             # now: (out_chans,)
         ]
+        if dropout:
+            # also include dropout on the FC layer
+            reduction_layers.append(nn.Dropout(dropout))
         self.feature_generator = nn.Sequential(*conv_layers, *reduction_layers)
 
     def forward(self, x):
@@ -255,6 +267,7 @@ class MultiHeadPolicyNet(nn.Module):
                  n_actions=3 * 3 * 2,
                  width=2,
                  use_bn=False,
+                 dropout=None,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
         self.preproc = MILBenchPreprocLayer()
@@ -263,13 +276,20 @@ class MultiHeadPolicyNet(nn.Module):
             in_chans=in_chans,
             out_chans=fc_dim,
             use_bn=use_bn,
+            dropout=dropout,
             width=width,
             ActivationCls=ActivationCls)
         # TODO: Maybe I should scale the output width of the layer by the
         # number of tasks? IDK whether width of the network needs to increase
         # with task count.
-        self.fc_postproc = nn.Sequential(nn.Linear(fc_dim, fc_dim),
-                                         ActivationCls())
+        postproc_layers = [nn.Linear(fc_dim, fc_dim), ActivationCls()]
+        if dropout:
+            # don't allow insane values of dropout by default
+            # (also, reminder that `dropout` value is p(drop), not the other
+            # way around)
+            assert 0 < dropout < 0.7, dropout
+            postproc_layers.append(torch.nn.Dropout(dropout))
+        self.fc_postproc = nn.Sequential(*postproc_layers)
         # this produces both a single value output and a vector of policy
         # logits for each sample
         self.mt_fc_layer = MultiTaskAffineLayer(fc_dim, n_actions + 1,

@@ -56,6 +56,9 @@ def cli():
 @click.option("--net-use-bn/--no-net-use-bn",
               default=True,
               help="use batch norm in net?")
+@click.option("--net-dropout",
+              default=0.0,
+              help="dropout p(drop) for all layers of policy (default: 0)")
 @click.option("--aug-mode",
               type=click.Choice(
                   ["none", "recol", "trans", "rot", "noise", "all"]),
@@ -72,7 +75,7 @@ def cli():
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
           gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop,
-          net_width_mul, net_use_bn, aug_mode):
+          net_width_mul, net_use_bn, net_dropout, aug_mode):
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
     # loading should be simplified by having a single class that can provide
@@ -141,6 +144,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                 'in_chans': in_chans,
                 'n_actions': n_actions,
                 'use_bn': net_use_bn,
+                'dropout': net_dropout,
                 'width': net_width_mul,
             }
 
@@ -192,6 +196,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         'n_demos': len(demos),
         'net_use_bn': net_use_bn,
         'net_width_mul': net_width_mul,
+        'net_dropout': net_dropout,
         'aug_mode': aug_mode,
         'seed': seed,
         'eval_n_traj': eval_n_traj,
