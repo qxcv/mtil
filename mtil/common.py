@@ -103,11 +103,32 @@ def compute_convnet_out_size(in_size, layers):
             # criterion. If you get an assertion error then you'll have to
             # extend the tuple :)
             known_shape_preserving_layers = (nn.ReLU, nn.BatchNorm2d,
-                                             nn.Dropout2d)
+                                             nn.Dropout2d, CoordConv)
             assert isinstance(layer, known_shape_preserving_layers), \
                 f"is {layer} a shape-preserving op? If not then this " \
                 f"function will break."
     return size
+
+
+class CoordConv(nn.Module):
+    """Add coordinates in [-1,1] to a convolution layer's input."""
+    def forward(self, x):
+        # needs N,C,H,W inputs
+        assert x.ndim == 4
+        h, w = x.shape[2:]
+        ones_h = x.new_ones((h, 1))
+        lin_h = torch.linspace(-1, 1, h, dtype=x.dtype,
+                               device=x.device)[:, None]
+        ones_w = x.new_ones((1, w))
+        lin_w = torch.linspace(-1, 1, w, dtype=x.dtype,
+                               device=x.device)[None, :]
+        new_maps_2d = torch.stack((lin_h * ones_w, lin_w * ones_h), dim=0)
+        new_maps_4d = new_maps_2d[None]
+        assert new_maps_4d.shape == (1, 2, h, w), (x.shape, new_maps_4d.shape)
+        batch_size = x.size(0)
+        new_maps_4d_batch = new_maps_4d.repeat(batch_size, 1, 1, 1)
+        result = torch.cat((x, new_maps_4d_batch), dim=1)
+        return result
 
 
 class MILBenchFeatureNetwork(nn.Module):
@@ -118,6 +139,7 @@ class MILBenchFeatureNetwork(nn.Module):
                  out_chans,
                  use_bn=False,
                  dropout=None,
+                 coord_conv=False,
                  width=2,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
@@ -127,9 +149,10 @@ class MILBenchFeatureNetwork(nn.Module):
         # suspect 'replicate' will make it less likely to pick up on absolute
         # position.
         conv_kwargs = dict(bias=not use_bn, padding_mode='zeros')
+        extra_in = 2 if coord_conv else 0
         conv_layers = [
             # at input: (96, 96)
-            nn.Conv2d(in_chans,
+            nn.Conv2d(in_chans + extra_in,
                       32 * w,
                       kernel_size=5,
                       stride=1,
@@ -137,7 +160,7 @@ class MILBenchFeatureNetwork(nn.Module):
                       **conv_kwargs),
             ActivationCls(),
             # now: (96, 96)
-            nn.Conv2d(32 * w,
+            nn.Conv2d(32 * w + extra_in,
                       64 * w,
                       kernel_size=3,
                       stride=2,
@@ -145,7 +168,7 @@ class MILBenchFeatureNetwork(nn.Module):
                       **conv_kwargs),
             ActivationCls(),
             # now: (48, 48)
-            nn.Conv2d(64 * w,
+            nn.Conv2d(64 * w + extra_in,
                       64 * w,
                       kernel_size=3,
                       stride=2,
@@ -153,7 +176,7 @@ class MILBenchFeatureNetwork(nn.Module):
                       **conv_kwargs),
             ActivationCls(),
             # now: (24, 24)
-            nn.Conv2d(64 * w,
+            nn.Conv2d(64 * w + extra_in,
                       64 * w,
                       kernel_size=3,
                       stride=2,
@@ -163,7 +186,7 @@ class MILBenchFeatureNetwork(nn.Module):
             # now: (12, 12)
             # TODO: a 12x12 feature map is a good place for attention :)
             # (Maybe a bit big? Ask Dan to see what transformers use.)
-            nn.Conv2d(64 * w,
+            nn.Conv2d(64 * w + extra_in,
                       32 * w,
                       kernel_size=3,
                       stride=2,
@@ -176,15 +199,17 @@ class MILBenchFeatureNetwork(nn.Module):
         # add BN & channel-wise dropout if appropriate
         new_conv_layers = []
         for layer in conv_layers:
+            is_conv = isinstance(layer, nn.Conv2d)
+            if is_conv and coord_conv:
+                new_conv_layers.append(CoordConv())
             new_conv_layers.append(layer)
-            if isinstance(layer, nn.Conv2d):
-                if dropout:
-                    # assert a channel-wise dropout layer after each
-                    # convolution
-                    new_conv_layers.append(nn.Dropout2d(dropout))
-                if use_bn:
-                    # insert a BN layer right after each convolution
-                    new_conv_layers.append(nn.BatchNorm2d(layer.out_channels))
+            if is_conv and dropout:
+                # assert a channel-wise dropout layer after convolution
+                new_conv_layers.append(nn.Dropout2d(dropout))
+            if is_conv and use_bn:
+                # insert BN layer after convolution (and optionally after
+                # dropout)
+                new_conv_layers.append(nn.BatchNorm2d(layer.out_channels))
         conv_layers = new_conv_layers
 
         # final FC layer to make feature maps the right size
@@ -268,6 +293,7 @@ class MultiHeadPolicyNet(nn.Module):
                  width=2,
                  use_bn=False,
                  dropout=None,
+                 coord_conv=False,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
         self.preproc = MILBenchPreprocLayer()
@@ -278,6 +304,7 @@ class MultiHeadPolicyNet(nn.Module):
             use_bn=use_bn,
             dropout=dropout,
             width=width,
+            coord_conv=coord_conv,
             ActivationCls=ActivationCls)
         # TODO: Maybe I should scale the output width of the layer by the
         # number of tasks? IDK whether width of the network needs to increase
