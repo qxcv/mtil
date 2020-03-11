@@ -62,9 +62,18 @@ def cli():
 @click.option("--net-coord-conv/--no-net-coord-conv",
               default=False,
               help="enable (x,y) coordinate inputs for the policy conv layers")
+@click.option("--net-attention/--no-net-attention",
+              default=False,
+              help="enable attention over final conv layer of policy net")
 @click.option("--aug-mode",
               type=click.Choice([
-                  "none", "recol", "trans", "rot", "transrot", "noise", "all"
+                  "none",
+                  "recol",
+                  "trans",
+                  "rot",
+                  "transrot",
+                  "noise",
+                  "all",
               ]),
               default="none",
               help="augmentations to use")
@@ -79,7 +88,8 @@ def cli():
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
           gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop,
-          net_width_mul, net_use_bn, net_dropout, net_coord_conv, aug_mode):
+          net_width_mul, net_use_bn, net_dropout, net_coord_conv,
+          net_attention, aug_mode):
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
     # loading should be simplified by having a single class that can provide
@@ -148,8 +158,9 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                 'in_chans': in_chans,
                 'n_actions': n_actions,
                 'use_bn': net_use_bn,
-                'coord_conv': net_coord_conv,
                 'dropout': net_dropout,
+                'coord_conv': net_coord_conv,
+                'attention': net_attention,
                 'width': net_width_mul,
             }
 
@@ -205,6 +216,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         'net_width_mul': net_width_mul,
         'net_dropout': net_dropout,
         'net_coord_conv': net_coord_conv,
+        'net_attention': net_attention,
         'aug_mode': aug_mode,
         'seed': seed,
         'eval_n_traj': eval_n_traj,

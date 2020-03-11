@@ -103,7 +103,8 @@ def compute_convnet_out_size(in_size, layers):
             # criterion. If you get an assertion error then you'll have to
             # extend the tuple :)
             known_shape_preserving_layers = (nn.ReLU, nn.BatchNorm2d,
-                                             nn.Dropout2d, CoordConv)
+                                             nn.Dropout2d, CoordConv,
+                                             ConvAttentionLayer)
             assert isinstance(layer, known_shape_preserving_layers), \
                 f"is {layer} a shape-preserving op? If not then this " \
                 f"function will break."
@@ -131,6 +132,31 @@ class CoordConv(nn.Module):
         return result
 
 
+class ConvAttentionLayer(nn.Module):
+    def __init__(self, in_dim, out_dim, num_heads):
+        super().__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.query = nn.Linear(in_dim, out_dim)
+        self.key = nn.Linear(in_dim, out_dim)
+        self.value = nn.Linear(in_dim, out_dim)
+        self.mha = nn.MultiheadAttention(out_dim, num_heads)
+
+    def forward(self, in_nchw):
+        b, c, h, w = in_nchw.shape
+        assert c == self.in_dim
+        in_tbc = in_nchw.reshape((b, c, h * w)).permute(2, 0, 1)
+        in_tbc_flat = in_tbc.reshape((b * h * w, c))
+        query = self.query(in_tbc_flat).reshape((h * w, b, self.out_dim))
+        key = self.key(in_tbc_flat).reshape((h * w, b, self.out_dim))
+        value = self.value(in_tbc_flat).reshape((h * w, b, self.out_dim))
+        out_tbo, _ = self.mha(query, key, value)
+        assert out_tbo.shape == (h * w, b, self.out_dim)
+        out_nohw = out_tbo.permute(1, 2, 0).reshape((b, self.out_dim, h, w))
+        assert out_nohw.shape == (b, self.out_dim, h, w)
+        return out_nohw
+
+
 class MILBenchFeatureNetwork(nn.Module):
     """Convolutional feature extractor to process 128x128 images down into
     1024-dimensional feature vectors."""
@@ -140,6 +166,7 @@ class MILBenchFeatureNetwork(nn.Module):
                  use_bn=False,
                  dropout=None,
                  coord_conv=False,
+                 attention=False,
                  width=2,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
@@ -150,6 +177,7 @@ class MILBenchFeatureNetwork(nn.Module):
         # position.
         conv_kwargs = dict(bias=not use_bn, padding_mode='zeros')
         extra_in = 2 if coord_conv else 0
+        conv_out_dim = 64 * w
         conv_layers = [
             # at input: (96, 96)
             nn.Conv2d(in_chans + extra_in,
@@ -187,7 +215,7 @@ class MILBenchFeatureNetwork(nn.Module):
             # TODO: a 12x12 feature map is a good place for attention :)
             # (Maybe a bit big? Ask Dan to see what transformers use.)
             nn.Conv2d(64 * w + extra_in,
-                      32 * w,
+                      conv_out_dim,
                       kernel_size=3,
                       stride=2,
                       padding=1,
@@ -196,8 +224,13 @@ class MILBenchFeatureNetwork(nn.Module):
             # now (6,6)
         ]
 
-        # add BN & channel-wise dropout if appropriate
+        # add CoordConv, BN & channel-wise dropout if appropriate
         new_conv_layers = []
+        # This "bn_next" thing ensures that we put BN *after* the activation. I
+        # doubt it matters much, but see here for CONTROVERSY:
+        # https://github.com/keras-team/keras/issues/1802#issuecomment-187966878
+        bn_next = False
+        bn_chans = None
         for layer in conv_layers:
             is_conv = isinstance(layer, nn.Conv2d)
             if is_conv and coord_conv:
@@ -206,15 +239,29 @@ class MILBenchFeatureNetwork(nn.Module):
             if is_conv and dropout:
                 # assert a channel-wise dropout layer after convolution
                 new_conv_layers.append(nn.Dropout2d(dropout))
+            if bn_next:
+                assert isinstance(layer, nn.ReLU), layer  # or other activation
+                new_conv_layers.append(nn.BatchNorm2d(bn_chans))
+                bn_next = False
+                bn_chans = None
             if is_conv and use_bn:
                 # insert BN layer after convolution (and optionally after
                 # dropout)
-                new_conv_layers.append(nn.BatchNorm2d(layer.out_channels))
+                bn_next = True
+                bn_chans = layer.out_channels
         conv_layers = new_conv_layers
+
+        # add attention to the last layer, if appropriate
+        if attention:
+            # TODO: play with number of heads; might need quite a few for,
+            # e.g., multi-task learning (or maybe I only need one, and I'm
+            # overthinking things!)
+            conv_layers.append(
+                ConvAttentionLayer(conv_out_dim, conv_out_dim, 4))
 
         # final FC layer to make feature maps the right size
         out_size = compute_convnet_out_size((96, 96), conv_layers)
-        fc_in_size = np.prod(out_size) * 32 * w
+        fc_in_size = np.prod(out_size) * conv_out_dim
         if fc_in_size >= 10 * out_chans:
             # warn if we have a huge input to the last layer
             # (I chose the size threshold arbitrarily)
@@ -294,6 +341,7 @@ class MultiHeadPolicyNet(nn.Module):
                  use_bn=False,
                  dropout=None,
                  coord_conv=False,
+                 attention=False,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
         self.preproc = MILBenchPreprocLayer()
@@ -305,6 +353,7 @@ class MultiHeadPolicyNet(nn.Module):
             dropout=dropout,
             width=width,
             coord_conv=coord_conv,
+            attention=attention,
             ActivationCls=ActivationCls)
         # TODO: Maybe I should scale the output width of the layer by the
         # number of tasks? IDK whether width of the network needs to increase
