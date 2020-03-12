@@ -183,7 +183,12 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         agents.append(env_agent)
 
     model_mt = model_ctor(**model_kwargs).to(dev)
-    opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
+    # Adam mostly works fine, but in very loose informal tests it seems like
+    # SGD had fewer weird failures where mean loss would jump up by a factor of
+    # 2x for a period (?). (I don't think that was solely due to high LR;
+    # probably an architectural issue.)
+    # opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
+    opt_mt = torch.optim.SGD(model_mt.parameters(), lr=1e-3, momentum=0.1)
 
     aug_opts = []
     if aug_mode == 'all':
