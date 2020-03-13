@@ -22,6 +22,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MAIN_FILE = os.path.abspath(
     os.path.join(THIS_DIR, '../mtil/algos/mtbc/__main__.py'))
 NUM_GPUS = 4
+EPOCHS = 30
 
 
 def expand_patterns(*patterns):
@@ -96,10 +97,10 @@ def gen_all_expts():
     # shell script. (another reminder: there are 20 passes through the dataset
     # for each 'eval')
     name_opt_combos = [
-        ('aug-none', ['--aug-mode', 'none']),
-        ('aug-recol', ['--aug-mode', 'recol']),
-        ('aug-trans', ['--aug-mode', 'trans']),
-        ('aug-noise', ['--aug-mode', 'noise']),
+        ('sweep-default', []),
+        ('sweep-dropout', ['--net-dropout', '0.3']),
+        ('sweep-coordconv', ['--net-coord-conv']),
+        ('sweep-aug-trans-rot', ['--aug-mode', 'transrot']),
     ]
     gpu_itr = itertools.cycle(range(NUM_GPUS))
     date = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M')
@@ -114,7 +115,7 @@ def gen_all_expts():
         mt_run_names.append(mt_run_name)
         mt_cmd = gen_command(sorted(DEMO_PATH_PATTERNS.keys()),
                              mt_run_name,
-                             30,
+                             EPOCHS,
                              gpu_idx=next(gpu_itr)) + extra_opts
         mt_cmds.append(mt_cmd)
 
@@ -125,7 +126,7 @@ def gen_all_expts():
                                f"single-task-bc-{task}-{opt_name}-{date}")
             st_run_names.append(new_st_run_name)
             new_st_cmd = gen_command(
-                [task], new_st_run_name[1], 30, gpu_idx=next(gpu_itr)) \
+                [task], new_st_run_name[1], EPOCHS, gpu_idx=next(gpu_itr)) \
                 + extra_opts
             st_cmds.append(new_st_cmd)
 
@@ -133,7 +134,7 @@ def gen_all_expts():
 
     # test CMDs will write problem data to a problem-specific dataframe, then
     # combine the frames into a plot later on
-    target_itrs = [29]
+    target_itrs = [EPOCHS - 1]
     eval_cmds = []
     # single-task eval runs (one per env)
     # TODO: add GPUs to these eval runs
