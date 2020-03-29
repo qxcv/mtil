@@ -61,13 +61,13 @@ def cli():
 @click.option("-T",
               "--sampler-time-steps",
               "sampler_batch_T",
-              default=128,
+              default=64,
               help="number of timesteps to advance each env when sampling")
 @click.option("--disc-batch-size",
               default=32,
               help="batch size for discriminator training")
 @click.option("--disc-up-per-iter",
-              default=4,
+              default=4,  # IDK if this is too fast or slow or what
               help="number of discriminator steps per RL step")
 @click.option('--disc-replay-mult',
               type=int,
@@ -193,8 +193,6 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
                                        target_std=0.1)
     # TODO: figure out what pol_batch_size should be/do, and what relation it
     # should have with sampler batch size
-    # TODO: also consider adding a BC loss to the policy (this will have to be
-    # PPO-specific though)
 
     # Stable Baselines hyperparams:
     # gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=0.00025,
@@ -212,11 +210,16 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     # value_loss_coeff and clip_grad_norm make much difference, since it's only
     # a factor of 2 change. cliprange difference might matter, but IDK. n_steps
     # will also matter a lot since it's so low by default in rlpyt (16).
-    ppo_hyperparams = dict(learning_rate=0.00025,
-                           value_loss_coeff=0.5,
-                           clip_grad_norm=0.5,
-                           gae_lambda=0.95,
-                           normalize_advantage=True)
+    ppo_hyperparams = dict(
+        learning_rate=2.5e-4,
+        discount=0.97,
+        entropy_loss_coeff=0.01,
+        gae_lambda=0.99,
+        ratio_clip=0.2,
+        value_loss_coeff=1.0,
+        clip_grad_norm=1.0,
+        normalize_advantage=False,
+   )
     if bc_loss:
         # TODO: make this configurable
         ppo_loader_mt = make_loader_mt(
@@ -230,6 +233,7 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     ppo_algo.set_reward_evaluator(reward_evaluator)
 
     print("Setting up optimiser")
+    # TODO: add augmentations to discriminator training (much more effective)
     gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
                                discrim_model=discriminator,
                                buffer_num_samples=max(
