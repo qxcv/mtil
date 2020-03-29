@@ -64,9 +64,15 @@ class BehaviouralCloningPPOMixin:
                 rnn_state = init_rnn_state[B_idxs] if recurrent else None
                 # NOTE: if not recurrent, will lose leading T dim, should be
                 # OK.
-                bc_task_ids, bc_obs, bc_acts = next(self.expert_batch_iter)
-                assert not torch.is_floating_point(bc_acts), bc_acts
-                bc_acts = bc_acts.long()
+                if self.expert_batch_iter:
+                    bc_task_ids, bc_obs, bc_acts = next(self.expert_batch_iter)
+                    assert not torch.is_floating_point(bc_acts), bc_acts
+                    bc_acts = bc_acts.long()
+                else:
+                    # 2020-03-29: bc_task_ids is unused, so commenting it out
+                    # bc_task_ids = None
+                    bc_obs = None
+                    bc_acts = None
                 loss, entropy, perplexity = self.loss(
                     *loss_inputs[T_idxs, B_idxs],
                     bc_observations=bc_obs,
