@@ -22,6 +22,7 @@ from mtil.algos.gail.embedded_bc import BCCustomRewardPPO
 from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
                                   MILBenchDiscriminator, RewardModel)
 from mtil.algos.mtbc.mtbc import load_state_dict_or_model
+from mtil.augmentation import MILBenchAugmentations
 from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
                          MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
                          load_demos_mt, make_loader_mt, make_logger_ctx,
@@ -66,9 +67,10 @@ def cli():
 @click.option("--disc-batch-size",
               default=32,
               help="batch size for discriminator training")
-@click.option("--disc-up-per-iter",
-              default=4,  # IDK if this is too fast or slow or what
-              help="number of discriminator steps per RL step")
+@click.option(
+    "--disc-up-per-iter",
+    default=4,  # IDK if this is too fast or slow or what
+    help="number of discriminator steps per RL step")
 @click.option('--disc-replay-mult',
               type=int,
               default=5,
@@ -90,6 +92,9 @@ def cli():
 @click.option("--omit-noop/--no-omit-noop",
               default=True,
               help="omit demonstration (s,a) pairs whenever a is a noop")
+@click.option("--disc-aug/--no-disc-aug",
+              default=True,
+              help="enable/disable discriminator input data augmentation")
 @click.option("--danger-debug-reward-weight",
               type=float,
               default=None,
@@ -103,7 +108,7 @@ def cli():
 def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
          disc_batch_size, out_dir, run_name, gpu_idx, disc_up_per_iter,
          total_n_steps, log_interval_steps, n_workers, snapshot_gap,
-         load_policy, bc_loss, omit_noop, disc_replay_mult,
+         load_policy, bc_loss, omit_noop, disc_replay_mult, disc_aug,
          danger_debug_reward_weight, danger_override_env_name):
     # set up seeds & devices
     set_seeds(seed)
@@ -219,7 +224,7 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
         value_loss_coeff=1.0,
         clip_grad_norm=1.0,
         normalize_advantage=False,
-   )
+    )
     if bc_loss:
         # TODO: make this configurable
         ppo_loader_mt = make_loader_mt(
@@ -233,16 +238,23 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     ppo_algo.set_reward_evaluator(reward_evaluator)
 
     print("Setting up optimiser")
-    # TODO: add augmentations to discriminator training (much more effective)
+    if disc_aug:
+        print("Discriminator augmentations on")
+        aug_model = MILBenchAugmentations(translate=True,
+                                          rotate=True,
+                                          noise=True)
+    else:
+        print("Discriminator augmentations off")
+        aug_model = None
     gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
                                discrim_model=discriminator,
                                buffer_num_samples=max(
-                                   disc_batch_size,
-                                   disc_replay_mult * sampler_batch_T *
-                                   sampler_batch_B),
+                                   disc_batch_size, disc_replay_mult *
+                                   sampler_batch_T * sampler_batch_B),
                                batch_size=disc_batch_size,
                                updates_per_itr=disc_up_per_iter,
-                               dev=dev)
+                               dev=dev,
+                               aug_model=aug_model)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards

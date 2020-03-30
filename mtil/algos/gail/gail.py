@@ -166,7 +166,7 @@ def _compute_gail_stats(disc_logits, is_real_labels):
 
 class GAILOptimiser:
     def __init__(self, dataset_mt, discrim_model, buffer_num_samples,
-                 batch_size, updates_per_itr, dev):
+                 batch_size, updates_per_itr, dev, aug_model):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -174,6 +174,7 @@ class GAILOptimiser:
         self.buffer_num_samples = buffer_num_samples
         self.updates_per_itr = updates_per_itr
         self.dev = dev
+        self.aug_model = aug_model
         self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
         self.expert_batch_iter = itertools.chain.from_iterable(
             itertools.repeat(self.expert_traj_loader))
@@ -213,6 +214,9 @@ class GAILOptimiser:
             all_obs = torch.cat(
                 [expert_obs, pol_replay_samples.all_observation], dim=0) \
                 .to(self.dev)
+            if self.aug_model is not None:
+                # augmentations
+                all_obs = self.aug_model(all_obs)
             all_acts = torch.cat([expert_acts.to(torch.int64),
                                   pol_replay_samples.all_action],
                                  dim=0) \
