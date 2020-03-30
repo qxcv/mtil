@@ -195,7 +195,10 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
                                        obs_dims=3,
                                        batch_size=disc_batch_size,
                                        normalise=True,
-                                       target_std=0.1)
+                                       # I think I had rewards in [0,0.01] in
+                                       # the PPO run that I got to run with a
+                                       # manually-defined reward.
+                                       target_std=0.01)
     # TODO: figure out what pol_batch_size should be/do, and what relation it
     # should have with sampler batch size
 
