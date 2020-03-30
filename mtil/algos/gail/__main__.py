@@ -221,7 +221,7 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     ppo_hyperparams = dict(
         learning_rate=2.5e-4,
         discount=0.97,
-        entropy_loss_coeff=0.01,
+        entropy_loss_coeff=0.003,
         gae_lambda=0.99,
         ratio_clip=0.2,
         value_loss_coeff=1.0,
