@@ -77,9 +77,9 @@ def cli():
               help="number of past epochs worth of interaction to save in "
               "discriminator replay buffer")
 @click.option("--total-n-steps",
-              default=4e6,
+              default=10e6,
               help="total number of steps to take in environment")
-@click.option("--bc-loss", default=0.01, help="behavioural cloning loss coeff")
+@click.option("--bc-loss", default=0.0, help="behavioural cloning loss coeff")
 @click.option("--run-name",
               default=None,
               type=str,
