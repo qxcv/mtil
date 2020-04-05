@@ -104,12 +104,55 @@ def cli():
               type=str,
               default=None,
               help="override env name in demos (and any preprocessors etc.)")
+@click.option('--disc-lr', default=1e-3, help='discriminator learning rate')
+@click.option('--disc-use-act/--no-disc-use-act',
+              default=True,
+              help='whether discriminator gets action inputs')
+@click.option('--disc-all-frames/--no-disc-all-frames',
+              default=True,
+              help='whether discriminator gets full input frame stack')
+@click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
+@click.option('--ppo-gamma', default=0.97, help='PPO discount factor (gamma)')
+@click.option('--ppo-lambda', default=0.99, help='PPO GAE lamdba')
+@click.option('--ppo-ent', default=1e-4, help='entropy bonus for PPO')
+@click.option('--ppo-adv-clip', default=0.2, help='PPO advantage clip ratio')
+@click.option('--ppo-norm-adv/--no-ppo-norm-adv',
+              default=False,
+              help='whether to normalise PPO advantages')
 @click.argument("demos", nargs=-1, required=True)
-def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
-         disc_batch_size, out_dir, run_name, gpu_idx, disc_up_per_iter,
-         total_n_steps, log_interval_steps, n_workers, snapshot_gap,
-         load_policy, bc_loss, omit_noop, disc_replay_mult, disc_aug,
-         danger_debug_reward_weight, danger_override_env_name):
+def main(
+        demos,
+        add_preproc,
+        seed,
+        sampler_batch_B,
+        sampler_batch_T,
+        disc_batch_size,
+        out_dir,
+        run_name,
+        gpu_idx,
+        disc_up_per_iter,
+        total_n_steps,
+        log_interval_steps,
+        n_workers,
+        snapshot_gap,
+        load_policy,
+        bc_loss,
+        omit_noop,
+        disc_replay_mult,
+        disc_aug,
+        danger_debug_reward_weight,
+        danger_override_env_name,
+        # new sweep hyperparams:
+        disc_lr,
+        disc_use_act,
+        disc_all_frames,
+        ppo_lr,
+        ppo_gamma,
+        ppo_lambda,
+        ppo_ent,
+        ppo_adv_clip,
+        ppo_norm_adv,
+):
     # set up seeds & devices
     set_seeds(seed)
     # 'spawn' is necessary to use GL envs in subprocesses. For whatever reason
@@ -188,17 +231,22 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
                                        model_kwargs=model_kwargs))
 
     print("Setting up discriminator/reward model")
-    discriminator = MILBenchDiscriminator(in_chans=in_chans,
-                                          act_dim=n_actions).to(dev)
+    discriminator = MILBenchDiscriminator(
+        in_chans=in_chans,
+        act_dim=n_actions,
+        use_all_chans=disc_all_frames,
+        use_actions=disc_use_act,
+    ).to(dev)
     reward_model = RewardModel(discriminator).to(dev)
-    reward_evaluator = RewardEvaluator(reward_model,
-                                       obs_dims=3,
-                                       batch_size=disc_batch_size,
-                                       normalise=True,
-                                       # I think I had rewards in [0,0.01] in
-                                       # the PPO run that I got to run with a
-                                       # manually-defined reward.
-                                       target_std=0.01)
+    reward_evaluator = RewardEvaluator(
+        reward_model,
+        obs_dims=3,
+        batch_size=disc_batch_size,
+        normalise=True,
+        # I think I had rewards in [0,0.01] in
+        # the PPO run that I got to run with a
+        # manually-defined reward.
+        target_std=0.01)
     # TODO: figure out what pol_batch_size should be/do, and what relation it
     # should have with sampler batch size
 
@@ -219,14 +267,14 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     # a factor of 2 change. cliprange difference might matter, but IDK. n_steps
     # will also matter a lot since it's so low by default in rlpyt (16).
     ppo_hyperparams = dict(
-        learning_rate=2.5e-4,
-        discount=0.97,
-        entropy_loss_coeff=0.0001,  # was working at 0.003 and 0.001
-        gae_lambda=0.99,
-        ratio_clip=0.2,
+        learning_rate=ppo_lr,
+        discount=ppo_gamma,
+        entropy_loss_coeff=ppo_ent,  # was working at 0.003 and 0.001
+        gae_lambda=ppo_lambda,
+        ratio_clip=ppo_adv_clip,
         value_loss_coeff=1.0,
         clip_grad_norm=1.0,
-        normalize_advantage=False,
+        normalize_advantage=ppo_norm_adv,
     )
     if bc_loss:
         # TODO: make this configurable
@@ -257,7 +305,8 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
                                batch_size=disc_batch_size,
                                updates_per_itr=disc_up_per_iter,
                                dev=dev,
-                               aug_model=aug_model)
+                               aug_model=aug_model,
+                               lr=disc_lr)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards

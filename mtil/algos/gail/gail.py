@@ -70,17 +70,32 @@ class DiscrimTrainBuffer:
 
 
 class MILBenchDiscriminator(nn.Module):
-    def __init__(self, in_chans, act_dim, ActivationCls=torch.nn.ReLU):
+    def __init__(self,
+                 in_chans,
+                 act_dim,
+                 use_actions,
+                 use_all_chans,
+                 ActivationCls=torch.nn.ReLU):
         super().__init__()
         self.act_dim = act_dim
+        self.in_chans = in_chans
+        self.use_all_chans = use_all_chans
+        self.use_actions = use_actions
         self.preproc = MILBenchPreprocLayer()
         # feature extractor gives us 1024-dim features
+        if use_all_chans:
+            feat_in_chans = in_chans
+        else:
+            # use just last channels
+            assert in_chans >= 3 and (in_chans % 3) == 0, in_chans
+            feat_in_chans = 3
         self.feature_extractor = MILBenchFeatureNetwork(
-            in_chans=in_chans, out_chans=256, ActivationCls=ActivationCls)
+            in_chans=feat_in_chans, out_chans=256, ActivationCls=ActivationCls)
+        extra_dim = act_dim if use_actions else 0
         # the logit generator takes in both the image features and the
         # act_dim-dimensional action (probably just a one-hot vector)
         self.logit_generator = nn.Sequential(
-            nn.Linear(256 + act_dim, 256),
+            nn.Linear(256 + extra_dim, 256),
             ActivationCls(),
             # now: flat 256-elem vector
             nn.Linear(256, 1),
@@ -92,12 +107,23 @@ class MILBenchDiscriminator(nn.Module):
         lead_dim_act, T_act, B_act, act_shape = infer_leading_dims(act, 0)
         assert (lead_dim, T, B) == (lead_dim_act, T_act, B_act)
 
-        obs_preproc = self.preproc(obs.view((T * B, *img_shape)))
+        if self.use_all_chans:
+            obs_trimmed = obs
+        else:
+            # don't use all channels, just use the last three (i.e. last image
+            # in the stack, in RGB setting)
+            assert obs.shape[-1] == self.in_chans
+            obs_trimmed = obs[..., :-3]
+        obs_reshape = obs_trimmed.view((T * B, *img_shape))
+        obs_preproc = self.preproc(obs_reshape)
         obs_features = self.feature_extractor(obs_preproc)
-        acts_one_hot = to_onehot(act.view((T * B, *act_shape)),
-                                 self.act_dim,
-                                 dtype=obs_features.dtype)
-        all_features = torch.cat((obs_features, acts_one_hot), dim=1)
+        if self.use_actions:
+            acts_one_hot = to_onehot(act.view((T * B, *act_shape)),
+                                     self.act_dim,
+                                     dtype=obs_features.dtype)
+            all_features = torch.cat((obs_features, acts_one_hot), dim=1)
+        else:
+            all_features = obs_features
         logits = self.logit_generator(all_features)
         assert logits.dim() == 2, logits.shape
         flat_logits = logits.squeeze(1)
@@ -166,7 +192,7 @@ def _compute_gail_stats(disc_logits, is_real_labels):
 
 class GAILOptimiser:
     def __init__(self, dataset_mt, discrim_model, buffer_num_samples,
-                 batch_size, updates_per_itr, dev, aug_model):
+                 batch_size, updates_per_itr, dev, aug_model, lr):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -178,7 +204,7 @@ class GAILOptimiser:
         self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
         self.expert_batch_iter = itertools.chain.from_iterable(
             itertools.repeat(self.expert_traj_loader))
-        self.opt = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=lr)
         # we'll set this up on the first pass
         self.pol_replay_buffer = None
 
