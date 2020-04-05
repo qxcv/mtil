@@ -18,4 +18,9 @@ setup(
         # augmentation
         ('kornia @ git+https://github.com/qxcv/kornia.git'
          '@74459645517a2b9ecd96bfb2299ea596db8efee5'),
+        # for HP search
+        'ray[tune,rllib]==0.8.4',
+        'setproctitle>=1.1.10',
+        'psutil>=5.6.5',
+        'scikit-optimize>=0.7.4,<0.8.0',
     ])

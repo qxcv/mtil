@@ -22,6 +22,7 @@ from mtil.algos.gail.embedded_bc import BCCustomRewardPPO
 from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
                                   MILBenchDiscriminator, RewardModel)
 from mtil.algos.mtbc.mtbc import load_state_dict_or_model
+from mtil.augmentation import MILBenchAugmentations
 from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
                          MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
                          load_demos_mt, make_loader_mt, make_logger_ctx,
@@ -61,23 +62,24 @@ def cli():
 @click.option("-T",
               "--sampler-time-steps",
               "sampler_batch_T",
-              default=128,
+              default=64,
               help="number of timesteps to advance each env when sampling")
 @click.option("--disc-batch-size",
               default=32,
               help="batch size for discriminator training")
-@click.option("--disc-up-per-iter",
-              default=4,
-              help="number of discriminator steps per RL step")
+@click.option(
+    "--disc-up-per-iter",
+    default=4,  # IDK if this is too fast or slow or what
+    help="number of discriminator steps per RL step")
 @click.option('--disc-replay-mult',
               type=int,
               default=5,
               help="number of past epochs worth of interaction to save in "
               "discriminator replay buffer")
 @click.option("--total-n-steps",
-              default=4e6,
+              default=10e6,
               help="total number of steps to take in environment")
-@click.option("--bc-loss", default=0.01, help="behavioural cloning loss coeff")
+@click.option("--bc-loss", default=0.0, help="behavioural cloning loss coeff")
 @click.option("--run-name",
               default=None,
               type=str,
@@ -90,6 +92,9 @@ def cli():
 @click.option("--omit-noop/--no-omit-noop",
               default=True,
               help="omit demonstration (s,a) pairs whenever a is a noop")
+@click.option("--disc-aug/--no-disc-aug",
+              default=True,
+              help="enable/disable discriminator input data augmentation")
 @click.option("--danger-debug-reward-weight",
               type=float,
               default=None,
@@ -99,12 +104,55 @@ def cli():
               type=str,
               default=None,
               help="override env name in demos (and any preprocessors etc.)")
+@click.option('--disc-lr', default=1e-3, help='discriminator learning rate')
+@click.option('--disc-use-act/--no-disc-use-act',
+              default=True,
+              help='whether discriminator gets action inputs')
+@click.option('--disc-all-frames/--no-disc-all-frames',
+              default=True,
+              help='whether discriminator gets full input frame stack')
+@click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
+@click.option('--ppo-gamma', default=0.97, help='PPO discount factor (gamma)')
+@click.option('--ppo-lambda', default=0.99, help='PPO GAE lamdba')
+@click.option('--ppo-ent', default=1e-4, help='entropy bonus for PPO')
+@click.option('--ppo-adv-clip', default=0.2, help='PPO advantage clip ratio')
+@click.option('--ppo-norm-adv/--no-ppo-norm-adv',
+              default=False,
+              help='whether to normalise PPO advantages')
 @click.argument("demos", nargs=-1, required=True)
-def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
-         disc_batch_size, out_dir, run_name, gpu_idx, disc_up_per_iter,
-         total_n_steps, log_interval_steps, n_workers, snapshot_gap,
-         load_policy, bc_loss, omit_noop, disc_replay_mult,
-         danger_debug_reward_weight, danger_override_env_name):
+def main(
+        demos,
+        add_preproc,
+        seed,
+        sampler_batch_B,
+        sampler_batch_T,
+        disc_batch_size,
+        out_dir,
+        run_name,
+        gpu_idx,
+        disc_up_per_iter,
+        total_n_steps,
+        log_interval_steps,
+        n_workers,
+        snapshot_gap,
+        load_policy,
+        bc_loss,
+        omit_noop,
+        disc_replay_mult,
+        disc_aug,
+        danger_debug_reward_weight,
+        danger_override_env_name,
+        # new sweep hyperparams:
+        disc_lr,
+        disc_use_act,
+        disc_all_frames,
+        ppo_lr,
+        ppo_gamma,
+        ppo_lambda,
+        ppo_ent,
+        ppo_adv_clip,
+        ppo_norm_adv,
+):
     # set up seeds & devices
     set_seeds(seed)
     # 'spawn' is necessary to use GL envs in subprocesses. For whatever reason
@@ -183,18 +231,24 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
                                        model_kwargs=model_kwargs))
 
     print("Setting up discriminator/reward model")
-    discriminator = MILBenchDiscriminator(in_chans=in_chans,
-                                          act_dim=n_actions).to(dev)
+    discriminator = MILBenchDiscriminator(
+        in_chans=in_chans,
+        act_dim=n_actions,
+        use_all_chans=disc_all_frames,
+        use_actions=disc_use_act,
+    ).to(dev)
     reward_model = RewardModel(discriminator).to(dev)
-    reward_evaluator = RewardEvaluator(reward_model,
-                                       obs_dims=3,
-                                       batch_size=disc_batch_size,
-                                       normalise=True,
-                                       target_std=0.1)
+    reward_evaluator = RewardEvaluator(
+        reward_model,
+        obs_dims=3,
+        batch_size=disc_batch_size,
+        normalise=True,
+        # I think I had rewards in [0,0.01] in
+        # the PPO run that I got to run with a
+        # manually-defined reward.
+        target_std=0.01)
     # TODO: figure out what pol_batch_size should be/do, and what relation it
     # should have with sampler batch size
-    # TODO: also consider adding a BC loss to the policy (this will have to be
-    # PPO-specific though)
 
     # Stable Baselines hyperparams:
     # gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=0.00025,
@@ -212,11 +266,16 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     # value_loss_coeff and clip_grad_norm make much difference, since it's only
     # a factor of 2 change. cliprange difference might matter, but IDK. n_steps
     # will also matter a lot since it's so low by default in rlpyt (16).
-    ppo_hyperparams = dict(learning_rate=0.00025,
-                           value_loss_coeff=0.5,
-                           clip_grad_norm=0.5,
-                           gae_lambda=0.95,
-                           normalize_advantage=True)
+    ppo_hyperparams = dict(
+        learning_rate=ppo_lr,
+        discount=ppo_gamma,
+        entropy_loss_coeff=ppo_ent,  # was working at 0.003 and 0.001
+        gae_lambda=ppo_lambda,
+        ratio_clip=ppo_adv_clip,
+        value_loss_coeff=1.0,
+        clip_grad_norm=1.0,
+        normalize_advantage=ppo_norm_adv,
+    )
     if bc_loss:
         # TODO: make this configurable
         ppo_loader_mt = make_loader_mt(
@@ -230,15 +289,24 @@ def main(demos, add_preproc, seed, sampler_batch_B, sampler_batch_T,
     ppo_algo.set_reward_evaluator(reward_evaluator)
 
     print("Setting up optimiser")
+    if disc_aug:
+        print("Discriminator augmentations on")
+        aug_model = MILBenchAugmentations(translate=True,
+                                          rotate=True,
+                                          noise=True)
+    else:
+        print("Discriminator augmentations off")
+        aug_model = None
     gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
                                discrim_model=discriminator,
                                buffer_num_samples=max(
-                                   disc_batch_size,
-                                   disc_replay_mult * sampler_batch_T *
-                                   sampler_batch_B),
+                                   disc_batch_size, disc_replay_mult *
+                                   sampler_batch_T * sampler_batch_B),
                                batch_size=disc_batch_size,
                                updates_per_itr=disc_up_per_iter,
-                               dev=dev)
+                               dev=dev,
+                               aug_model=aug_model,
+                               lr=disc_lr)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards
