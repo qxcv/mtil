@@ -109,12 +109,14 @@ class MILBenchDiscriminator(nn.Module):
 
         if self.use_all_chans:
             obs_trimmed = obs
+            trimmed_img_shape = img_shape
         else:
             # don't use all channels, just use the last three (i.e. last image
             # in the stack, in RGB setting)
             assert obs.shape[-1] == self.in_chans
-            obs_trimmed = obs[..., :-3]
-        obs_reshape = obs_trimmed.view((T * B, *img_shape))
+            obs_trimmed = obs[..., -3:]
+            trimmed_img_shape = (*img_shape[:-1], obs_trimmed.shape[-1])
+        obs_reshape = obs_trimmed.view((T * B, *trimmed_img_shape))
         obs_preproc = self.preproc(obs_reshape)
         obs_features = self.feature_extractor(obs_preproc)
         if self.use_actions:

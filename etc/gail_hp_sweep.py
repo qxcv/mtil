@@ -33,7 +33,9 @@ def get_stats():
     prog_path, = prog_paths
     data = pd.read_csv(prog_path)
     # just return all stats averaged over last 10 time steps
-    stats = data.iloc[-10].mean().to_dict()
+    last_ten = data.iloc[-10:]
+    assert len(last_ten) >= 1, last_ten
+    stats = last_ten.mean().to_dict()
     return stats
 
 
@@ -51,6 +53,11 @@ def run_gail(gpu_idx, **cfg_kwargs):
             # other args: pass stringified argument explicitly
             auto_args.append('--' + dashed)
             auto_args.append(str(v))
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cvd is not None:
+        # use --gpu-idx=0 b/c we don't know what device we're on
+        assert cvd == str(gpu_idx), (gpu_idx, cvd)
+        gpu_idx = 0
     cmd = [
         *'xvfb-run -a python -m mtil.algos.gail'.split(),
         *f'--gpu-idx {gpu_idx} --snapshot-gap 1000'.split(),
@@ -111,7 +118,7 @@ def run_ray_tune(ray_address):
     sk_space['disc_use_act'] = [True, False]
     sk_space['disc_all_frames'] = [True, False]
     sk_space['sampler_time_steps'] = (16, 128)
-    sk_space['sampler_batch_envs'] = (8, 64)
+    sk_space['sampler_batch_envs'] = (8, 32)
     # leaving this out for now; don't want to just get a finely-tuned BC
     # baseline
     # sk_space['bc_loss'] = ['0.0', str(int(1e-3)), str(1)]
