@@ -4,12 +4,14 @@ import collections
 import glob
 import os
 import subprocess
+import weakref
 
 import click
 import pandas as pd
 import ray
 from ray import tune
 from ray.tune.suggest.skopt import SkOptSearch
+from ray.tune.schedulers import FIFOScheduler
 from skopt.optimizer import Optimizer
 from skopt.space import space as opt_space
 
@@ -75,6 +77,27 @@ def ray_tune_trial(conf, reporter):
     reporter(hp_score=hp_score, **stats)
 
 
+class CheckpointFIFOScheduler(FIFOScheduler):
+    """Variant of FIFOScheduler that periodically saves the given search
+    algorithm. Useful for, e.g., SkOptSearch, where it is helpful to be able to
+    re-instantiate the search object later on."""
+    # FIXME: this is a stupid hack. There should be a better way of saving
+    # skopt internals as part of Ray Tune. Perhaps defining a custom trainable
+    # would do the trick?
+    def __init__(self, search_alg):
+        self.search_alg = weakref.proxy(search_alg)
+
+    def on_trial_complete(self, trial_runner, trial, result):
+        rv = super().on_trial_complete(trial_runner, trial, result)
+        # references to _local_checkpoint_dir and _session_dir are a bit hacky
+        checkpoint_path = os.path.join(
+            trial_runner._local_checkpoint_dir,
+            f'search-alg-{trial_runner._session_str}.pkl')
+        self.search_alg.save(checkpoint_path + '.tmp')
+        os.rename(checkpoint_path + '.tmp', checkpoint_path)
+        return rv
+
+
 @click.command()
 @click.option("--ray-address",
               default=None,
@@ -116,7 +139,7 @@ def run_ray_tune(ray_address):
         'ppo_norm_adv': False,
     }
     sk_optimiser = Optimizer(list(sk_space.values()), base_estimator='GP')
-    algo = SkOptSearch(
+    search_alg = SkOptSearch(
         sk_optimiser,
         sk_space.keys(),
         max_concurrent=4,
@@ -129,11 +152,12 @@ def run_ray_tune(ray_address):
         ray.init(redis_address=ray_address)
     tune.run(
         ray_tune_trial,
-        search_alg=algo,
+        search_alg=search_alg,
         local_dir='ray-tune-results',
         resources_per_trial={"gpu": 1},
         # this is like 3-5 days of runs
-        num_samples=100)
+        num_samples=100,
+        scheduler=CheckpointFIFOScheduler(search_alg))
 
 
 if __name__ == '__main__':
