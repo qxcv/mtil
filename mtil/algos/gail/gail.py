@@ -45,7 +45,7 @@ class DiscrimTrainBuffer:
         T, B = get_leading_dims(replay_samples, n_dim=2)
         # if there's not enough room for a single full round of sampling then
         # the buffer is _probably_ too small.
-        assert T * B < self.total_n_samples, \
+        assert T * B <= self.total_n_samples, \
             f"There's not enough room in this buffer for a single full " \
             f"batch! T*B={T*B} > total_n_samples={self.total_n_samples}"
         flat_samples = buffer_func(
