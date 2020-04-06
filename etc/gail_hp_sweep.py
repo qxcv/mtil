@@ -112,7 +112,7 @@ class CheckpointFIFOScheduler(FIFOScheduler):
 def run_ray_tune(ray_address):
     sk_space = collections.OrderedDict()
     sk_space['omit_noop'] = [True, False]
-    sk_space['disc_up_per_iter'] = (1, 8)
+    sk_space['disc_up_per_iter'] = (1, 16)
     sk_space['disc_replay_mult'] = opt_space.Integer(1, 32, 'log-uniform')
     sk_space['disc_lr'] = (1e-5, 1e-2, 'log-uniform')
     sk_space['disc_use_act'] = [True, False]
@@ -145,6 +145,10 @@ def run_ray_tune(ray_address):
         'ppo_adv_clip': 0.2,
         'ppo_norm_adv': False,
     }
+    for k, v in list(sk_space.items()):
+        new_v = opt_space.check_dimension(v)
+        new_v.name = k
+        sk_space[k] = new_v
     sk_optimiser = Optimizer(list(sk_space.values()), base_estimator='GP')
     search_alg = SkOptSearch(
         sk_optimiser,

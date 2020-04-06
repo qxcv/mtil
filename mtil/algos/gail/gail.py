@@ -315,29 +315,32 @@ class GAILMinibatchRl(MinibatchRl):
     def train(self, cb_startup=None):
         # copied from MinibatchRl.train() & extended to support GAIL update
         n_itr = self.startup()
-        if cb_startup:
-            # post-startup callback (cb)
-            cb_startup(self)
-        for itr in range(n_itr):
-            with logger.prefix(f"itr #{itr} "):
-                self.agent.sample_mode(
-                    itr)  # Might not be this agent sampling.
-                samples, traj_infos = self.sampler.obtain_samples(itr)
-                self.agent.train_mode(itr)
-                opt_info = self.algo.optimize_agent(itr, samples)
+        try:
+            if cb_startup:
+                # post-startup callback (cb)
+                cb_startup(self)
+            for itr in range(n_itr):
+                with logger.prefix(f"itr #{itr} "):
+                    self.agent.sample_mode(
+                        itr)  # Might not be this agent sampling.
+                    samples, traj_infos = self.sampler.obtain_samples(itr)
+                    self.agent.train_mode(itr)
+                    opt_info = self.algo.optimize_agent(itr, samples)
 
-                # run GAIL & combine its output with RL algorithm output
-                gail_info = self.gail_optim.optim_disc(itr, samples)
-                if self.joint_info_cls is None:
-                    self.joint_info_cls = namedtuple(
-                        'joint_info_cls', gail_info._fields + opt_info._fields)
-                opt_info = self.joint_info_cls(**gail_info._asdict(),
-                                               **opt_info._asdict())
+                    # run GAIL & combine its output with RL algorithm output
+                    gail_info = self.gail_optim.optim_disc(itr, samples)
+                    if self.joint_info_cls is None:
+                        self.joint_info_cls = namedtuple(
+                            'joint_info_cls',
+                            gail_info._fields + opt_info._fields)
+                    opt_info = self.joint_info_cls(**gail_info._asdict(),
+                                                   **opt_info._asdict())
 
-                self.store_diagnostics(itr, traj_infos, opt_info)
-                if (itr + 1) % self.log_interval_itrs == 0:
-                    self.log_diagnostics(itr)
-        self.shutdown()
+                    self.store_diagnostics(itr, traj_infos, opt_info)
+                    if (itr + 1) % self.log_interval_itrs == 0:
+                        self.log_diagnostics(itr)
+        finally:
+            self.shutdown()
 
     def get_itr_snapshot(self, itr):
         snap_dict = super().get_itr_snapshot(itr)
