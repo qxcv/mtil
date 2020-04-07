@@ -225,7 +225,14 @@ class GAILOptimiser:
         if self.pol_replay_buffer is None:
             self.pol_replay_buffer = DiscrimTrainBuffer(
                 self.buffer_num_samples, samples)
-        self.pol_replay_buffer.append_samples(samples)
+        # TODO: proper support for env IDs in multi-task setting
+        sample_env_ids = samples.env.observation.env_id
+        keep_mask = sample_env_ids == 0
+        # check that each batch index is "pure", in sense that e.g. all
+        # elements at index k are always for the same task ID
+        assert (keep_mask[:1] == keep_mask).all(), keep_mask
+        filtered_samples = samples[:, keep_mask[0]]
+        self.pol_replay_buffer.append_samples(filtered_samples)
 
         # switch to train mode before taking any steps
         self.model.train()
@@ -239,9 +246,10 @@ class GAILOptimiser:
             pol_replay_samples = self.pol_replay_buffer.sample_batch(
                 self.batch_size // 2)
             pol_replay_samples = torchify_buffer(pol_replay_samples)
-            all_obs = torch.cat(
-                [expert_obs, pol_replay_samples.all_observation], dim=0) \
-                .to(self.dev)
+            expert_images = pol_replay_samples.all_observation.observation
+            # TODO: make use of expert env IDs
+            # expert_ids = pol_replay_samples.all_observation.env_id
+            all_obs = torch.cat([expert_obs, expert_images]).to(self.dev)
             if self.aug_model is not None:
                 # augmentations
                 all_obs = self.aug_model(all_obs)
@@ -315,32 +323,30 @@ class GAILMinibatchRl(MinibatchRl):
     def train(self, cb_startup=None):
         # copied from MinibatchRl.train() & extended to support GAIL update
         n_itr = self.startup()
-        try:
-            if cb_startup:
-                # post-startup callback (cb)
-                cb_startup(self)
-            for itr in range(n_itr):
-                with logger.prefix(f"itr #{itr} "):
-                    self.agent.sample_mode(
-                        itr)  # Might not be this agent sampling.
-                    samples, traj_infos = self.sampler.obtain_samples(itr)
-                    self.agent.train_mode(itr)
-                    opt_info = self.algo.optimize_agent(itr, samples)
+        if cb_startup:
+            # post-startup callback (cb)
+            cb_startup(self)
+        for itr in range(n_itr):
+            with logger.prefix(f"itr #{itr} "):
+                self.agent.sample_mode(
+                    itr)  # Might not be this agent sampling.
+                samples, traj_infos = self.sampler.obtain_samples(itr)
+                self.agent.train_mode(itr)
+                opt_info = self.algo.optimize_agent(itr, samples)
 
-                    # run GAIL & combine its output with RL algorithm output
-                    gail_info = self.gail_optim.optim_disc(itr, samples)
-                    if self.joint_info_cls is None:
-                        self.joint_info_cls = namedtuple(
-                            'joint_info_cls',
-                            gail_info._fields + opt_info._fields)
-                    opt_info = self.joint_info_cls(**gail_info._asdict(),
-                                                   **opt_info._asdict())
+                # run GAIL & combine its output with RL algorithm output
+                gail_info = self.gail_optim.optim_disc(itr, samples)
+                if self.joint_info_cls is None:
+                    self.joint_info_cls = namedtuple(
+                        'joint_info_cls',
+                        gail_info._fields + opt_info._fields)
+                opt_info = self.joint_info_cls(**gail_info._asdict(),
+                                                **opt_info._asdict())
 
-                    self.store_diagnostics(itr, traj_infos, opt_info)
-                    if (itr + 1) % self.log_interval_itrs == 0:
-                        self.log_diagnostics(itr)
-        finally:
-            self.shutdown()
+                self.store_diagnostics(itr, traj_infos, opt_info)
+                if (itr + 1) % self.log_interval_itrs == 0:
+                    self.log_diagnostics(itr)
+        self.shutdown()
 
     def get_itr_snapshot(self, itr):
         snap_dict = super().get_itr_snapshot(itr)

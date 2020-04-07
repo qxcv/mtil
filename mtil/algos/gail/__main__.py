@@ -12,8 +12,6 @@ import warnings
 
 import click
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
-from rlpyt.samplers.parallel.cpu.sampler import CpuSampler
-from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.utils.logging import logger
 import torch
 
@@ -21,10 +19,11 @@ import torch
 from mtil.algos.gail.embedded_bc import BCCustomRewardPPO
 from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
                                   MILBenchDiscriminator, RewardModel)
+from mtil.algos.gail.sample_mux import (MILBenchEnvMultiplexer, MuxCpuSampler,
+                                        MuxGpuSampler, MuxTaskModelWrapper)
 from mtil.algos.mtbc.mtbc import load_state_dict_or_model
 from mtil.augmentation import MILBenchAugmentations
-from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
-                         MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
+from mtil.common import (MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
                          load_demos_mt, make_loader_mt, make_logger_ctx,
                          sane_click_init, set_seeds)
 from mtil.reward_injection_wrappers import RewardEvaluator
@@ -119,6 +118,10 @@ def cli():
 @click.option('--ppo-norm-adv/--no-ppo-norm-adv',
               default=False,
               help='whether to normalise PPO advantages')
+@click.option("--transfer-variant",
+              default=[],
+              multiple=True,
+              help="name of transfer env for co-training (can be repeated)")
 @click.argument("demos", nargs=-1, required=True)
 def main(
         demos,
@@ -140,6 +143,7 @@ def main(
         omit_noop,
         disc_replay_mult,
         disc_aug,
+        transfer_variant,
         danger_debug_reward_weight,
         danger_override_env_name,
         # new sweep hyperparams:
@@ -154,6 +158,7 @@ def main(
         ppo_norm_adv,
 ):
     # set up seeds & devices
+    # TODO: also seed child envs, when rlpyt supports it
     set_seeds(seed)
     # 'spawn' is necessary to use GL envs in subprocesses. For whatever reason
     # they don't play nice after a fork. (But what about set_seeds() in
@@ -186,7 +191,7 @@ def main(
     env_ids_and_names = [(name, env_name_to_id[name])
                          for _, name in name_pairs]
     assert len(env_ids_and_names) == 1, \
-        "GAIL doesn't support multi-task training yet"
+        "GAIL doesn't support multi-task training (YET)"
     (env_name, env_id), = env_ids_and_names
     if danger_override_env_name:
         warnings.warn(f"Overriding environment name {env_name} with "
@@ -195,19 +200,27 @@ def main(
 
     print("Getting env metadata")
     # local copy of Gym env, w/ args to create equivalent env in the sampler
-    env_ctor = MILBenchGymEnv
-    env_ctor_kwargs = dict(env_name=env_name)
+    all_env_names = [env_name] + list(transfer_variant)
+    env_mux = MILBenchEnvMultiplexer(all_env_names)
+    new_sampler_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(
+        sampler_batch_B)
+    if new_sampler_batch_B != sampler_batch_B:
+        print(f"Increasing sampler batch size from '{sampler_batch_B}' to "
+              f"'{new_sampler_batch_B}' to be divisible by number of "
+              f"environments ({len(all_env_names)})")
+        sampler_batch_B = new_sampler_batch_B
+
     env_meta = get_env_meta(env_name)
     # number of transitions collected during each round of sampling will be
     # batch_T * batch_B = n_steps * n_envs
 
     print("Setting up sampler")
     if use_gpu:
-        sampler_ctor = GpuSampler
+        sampler_ctor = MuxGpuSampler
     else:
-        sampler_ctor = CpuSampler
+        sampler_ctor = MuxCpuSampler
     sampler = sampler_ctor(
-        env_ctor,
+        env_mux,
         env_ctor_kwargs,
         max_decorrelation_steps=env_meta.spec.max_episode_steps,
         TrajInfoCls=MILBenchTrajInfo,
@@ -224,10 +237,10 @@ def main(
     model_kwargs = dict(in_chans=in_chans,
                         n_actions=n_actions,
                         env_ids_and_names=env_ids_and_names)
-    ppo_agent = CategoricalPgAgent(ModelCls=FixedTaskModelWrapper,
+    ppo_agent = CategoricalPgAgent(ModelCls=MuxTaskModelWrapper,
                                    model_kwargs=dict(
                                        model_ctor=model_ctor,
-                                       task_id=env_id,
+                                       # task_id=env_id,
                                        model_kwargs=model_kwargs))
 
     print("Setting up discriminator/reward model")
@@ -279,7 +292,7 @@ def main(
     if bc_loss:
         # TODO: make this configurable
         ppo_loader_mt = make_loader_mt(
-            dataset_mt, max(16, min(64, sampler_batch_B * sampler_batch_T)))
+            dataset_mt, max(16, min(64, sampler_batch_T * sampler_batch_B)))
     else:
         ppo_loader_mt = None
     ppo_algo = BCCustomRewardPPO(bc_loss_coeff=bc_loss,

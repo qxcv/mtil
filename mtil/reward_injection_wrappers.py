@@ -52,11 +52,15 @@ class RewardEvaluator:
         self.dev = next(iter(reward_model.parameters())).device
         self.reward_model = reward_model
 
-    def evaluate(self, obs_tensor, act_tensor, update_stats=True):
+    def evaluate(self, obs_tuple, act_tensor, update_stats=True):
         # put model into eval mode if necessary
         old_training = self.reward_model.training
         if old_training:
             self.reward_model.eval()
+
+        obs_tensor = obs_tuple.observation
+        # TODO: actually use env ID
+        # env_ids = obs_tuple.env_id
 
         with torch.no_grad():
             # flatten observations & actions
@@ -72,6 +76,7 @@ class RewardEvaluator:
                 act_batch = act_flat[b_start:b_start + self.batch_size]
                 dev_obs = obs_batch.to(self.dev)
                 dev_acts = act_batch.to(self.dev)
+                # FIXME: make the reward model take in an env ID
                 dev_reward = self.reward_model(dev_obs, dev_acts)
                 reward_tensors.append(dev_reward.to(old_dev))
 
