@@ -13,6 +13,43 @@ import torch.nn.functional as F
 
 from mtil.common import FixedTaskModelWrapper
 
+LATEST_MARKER = 'LATEST'
+
+
+def get_latest_path(path_template):
+    abs_path = os.path.abspath(path_template)
+    dir_name, base_name = os.path.split(abs_path)
+    # find last occurrence
+    latest_ind_rev = base_name[::-1].find(LATEST_MARKER[::-1])
+    if latest_ind_rev == -1:
+        raise ValueError(f"No occurrence of marker '{LATEST_MARKER}' in "
+                         f"path template '{path_template}'")
+    latest_start = len(base_name) - latest_ind_rev - len(LATEST_MARKER)
+    latest_stop = latest_start + len(LATEST_MARKER)
+    bn_prefix = base_name[:latest_start]
+    bn_suffix = base_name[latest_stop:]
+    best_num = None
+    best_fn = None
+    for entry in os.listdir(dir_name):
+        print(entry, 'and', bn_prefix, 'and', bn_suffix)
+        if not (entry.startswith(bn_prefix) and entry.endswith(bn_suffix)):
+            continue
+        end_idx = len(entry) - len(bn_suffix)
+        num_str = entry[latest_start:end_idx]
+        try:
+            num = int(num_str)
+        except ValueError as ex:
+            raise ValueError(
+                f"Error trying to parse file name '{entry}' with template "
+                f"'{path_template}': {ex.message}")
+        if best_fn is None or num > best_num:
+            best_fn = entry
+            best_num = num
+    if best_fn is None:
+        raise ValueError("Couldn't find any files matching path template "
+                         f"'{path_template}' in '{dir_name}'")
+    return os.path.join(dir_name, best_fn)
+
 
 def copy_model_into_sampler(model, sampler, prefix='model'):
     """Update the `.agent` inside `sampler` so that it contains weights from
