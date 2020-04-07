@@ -443,12 +443,18 @@ class MTBCEvalProtocol(EvaluationProtocol):
               default=10,
               help="number of rollouts to execute in each test config")
 @click.option("--batch-size", default=32, help="batch size for eval")
+@click.option("--load-latest/--no-load-latest",
+              default=False,
+              help="replaces the last '*' in the state_dict_or_model_path "
+              "basename with the highest integer that yields a valid path")
 @click.argument('state_dict_or_model_path')
 def testall(state_dict_or_model_path, env_name, seed, fps, write_latex,
             latex_alg_name, n_rollouts, run_id, write_csv, gpu_idx,
-            batch_size):
+            batch_size, load_latest):
     """Run quantitative evaluation on all test variants of a given
     environment."""
+    if load_latest:
+        raise NotImplementedError("still need to write this")
     # TODO: is there some way of factoring this init code out? Maybe put into
     # Click base command so that it gets run for `train`, `testall`, etc.
     set_seeds(seed)
