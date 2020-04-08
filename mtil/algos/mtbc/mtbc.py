@@ -31,7 +31,6 @@ def get_latest_path(path_template):
     best_num = None
     best_fn = None
     for entry in os.listdir(dir_name):
-        print(entry, 'and', bn_prefix, 'and', bn_suffix)
         if not (entry.startswith(bn_prefix) and entry.endswith(bn_suffix)):
             continue
         end_idx = len(entry) - len(bn_suffix)
