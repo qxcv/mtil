@@ -10,13 +10,17 @@ import click
 import pandas as pd
 import ray
 from ray import tune
-from ray.tune.suggest.skopt import SkOptSearch
 from ray.tune.schedulers import FIFOScheduler
+from ray.tune.suggest.skopt import SkOptSearch
 from skopt.optimizer import Optimizer
 from skopt.space import space as opt_space
 
 DEMO_PATTERN \
     = '~/repos/milbench/demos-simplified/match-regions-2020-03-01/*.pkl.gz'
+FIXED_ARGS = [
+    '--disc-lr', str(1e-4), '--disc-use-act', '--disc-all-frames',
+    '--disc-replay-mult', str(4), '--no-ppo-norm-adv',
+]
 
 
 def get_demo_paths():
@@ -62,6 +66,7 @@ def run_gail(gpu_idx, **cfg_kwargs):
         *'xvfb-run -a python -m mtil.algos.mtgail'.split(),
         *f'--gpu-idx {gpu_idx} --snapshot-gap 1000'.split(),
         *f'--total-n-steps {int(1e6)}'.split(),
+        *FIXED_ARGS,
         *auto_args,
         *get_demo_paths(),
     ]
@@ -111,39 +116,41 @@ class CheckpointFIFOScheduler(FIFOScheduler):
               help="address of Ray instance to attach to")
 def run_ray_tune(ray_address):
     sk_space = collections.OrderedDict()
-    sk_space['omit_noop'] = [True, False]
-    sk_space['disc_up_per_iter'] = (1, 16)
-    sk_space['disc_replay_mult'] = opt_space.Integer(1, 32, 'log-uniform')
-    sk_space['disc_lr'] = (1e-5, 1e-2, 'log-uniform')
-    sk_space['disc_use_act'] = [True, False]
-    sk_space['disc_all_frames'] = [True, False]
-    sk_space['sampler_time_steps'] = (16, 128)
-    sk_space['sampler_batch_envs'] = (8, 32)
+    sk_space['omit_noop'] = [True, False]  # ???
+    sk_space['disc_up_per_iter'] = (8, 32)  # small values don't work
+    sk_space['sampler_time_steps'] = (8, 64)  # small is okay?
+    sk_space['sampler_batch_envs'] = (16, 64)  # bigger = better?
     # leaving this out for now; don't want to just get a finely-tuned BC
     # baseline
     # sk_space['bc_loss'] = ['0.0', str(int(1e-3)), str(1)]
-    sk_space['ppo_lr'] = (1e-5, 1e-3, 'log-uniform')
+    sk_space['ppo_lr'] = (5e-5, 5e-4, 'log-uniform')
     sk_space['ppo_gamma'] = (0.9, 1.0, 'log-uniform')
-    sk_space['ppo_lambda'] = (0.95, 1.0, 'log-uniform')
-    sk_space['ppo_ent'] = (1e-5, 1e-3, 'log-uniform')
-    sk_space['ppo_adv_clip'] = (0.05, 0.5, 'uniform')
-    sk_space['ppo_norm_adv'] = [True, False]
+    sk_space['ppo_lambda'] = (0.9, 1.0, 'log-uniform')
+    sk_space['ppo_ent'] = (1e-6, 1e-4, 'log-uniform')
+    sk_space['ppo_adv_clip'] = (0.01, 0.2, 'uniform')
+    # things that don't matter that much:
+    # sk_space['disc_lr'] = (1e-5, 5e-4, 'log-uniform')  # fix to 1e-4
+    # sk_space['disc_use_act'] = [True, False]  # fix to True
+    # sk_space['disc_all_frames'] = [True, False]  # fix to True
+    # sk_space['disc_replay_mult'] = opt_space.Integer(1, 32, 'log-uniform')  # fix to 4 # noqa: E501
+    # sk_space['ppo_norm_adv'] = [True, False]  # fix to False
     known_working = {
         'omit_noop': True,
-        'disc_up_per_iter': 4,
-        'disc_replay_mult': 5,
-        'disc_lr': 1e-3,
-        'disc_use_act': True,
-        'disc_all_frames': True,
-        'sampler_time_steps': 64,
+        'disc_up_per_iter': 16,
+        'sampler_time_steps': 16,
         'sampler_batch_envs': 32,
         'bc_loss': 0.0,
         'ppo_lr': 2.5e-4,
-        'ppo_gamma': 0.97,
-        'ppo_lambda': 0.99,
-        'ppo_ent': 1e-4,
-        'ppo_adv_clip': 0.2,
-        'ppo_norm_adv': False,
+        'ppo_gamma': 0.95,
+        'ppo_lambda': 0.95,
+        'ppo_ent': 1e-5,
+        'ppo_adv_clip': 0.05,
+        # things that don't matter much:
+        # 'disc_lr': 1e-4,
+        # 'disc_use_act': True,
+        # 'disc_all_frames': True,
+        # 'disc_replay_mult': 4,
+        # 'ppo_norm_adv': False,
     }
     for k, v in list(sk_space.items()):
         new_v = opt_space.check_dimension(v)
@@ -166,8 +173,8 @@ def run_ray_tune(ray_address):
         search_alg=search_alg,
         local_dir='ray-tune-results',
         resources_per_trial={"gpu": 1},
-        # this is like 3-5 days of runs
-        num_samples=100,
+        # this could be 2 days to a week of runs, depending on the env
+        num_samples=200,
         scheduler=CheckpointFIFOScheduler(search_alg))
 
 
