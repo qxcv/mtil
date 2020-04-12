@@ -3,6 +3,8 @@
 .#*
 *.swp
 *~
+.idea
+.ipynb_checkpoints
 demos
 scratch
 ray-tune-results
