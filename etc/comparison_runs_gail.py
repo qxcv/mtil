@@ -41,7 +41,7 @@ def expand_patterns(*patterns):
 def gen_command(expts, run_name, n_steps, gpu_idx=0):
     demo_paths = [DEMO_PATH_PATTERNS[expt] for expt in expts]
     cmd_parts = [
-        *("xvfb-run -a python -m mtil.algos.gail --no-omit-noop "
+        *("xvfb-run -a python -m mtil.algos.mtgail --no-omit-noop "
           "--disc-up-per-iter 16 --disc-replay-mult 5 --disc-lr 1e-4 "
           "--disc-use-act --disc-all-frames --sampler-time-steps 32 "
           "--sampler-batch-envs 24 --ppo-lr 2e-4 --ppo-gamma 0.9 "

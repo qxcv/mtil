@@ -16,11 +16,11 @@ from rlpyt.utils.logging import logger
 import torch
 
 # TODO: factor load_state_dict_or_model from mtbc out into common
-from mtil.algos.gail.embedded_bc import BCCustomRewardPPO
-from mtil.algos.gail.gail import (GAILMinibatchRl, GAILOptimiser,
-                                  MILBenchDiscriminator, RewardModel)
-from mtil.algos.gail.sample_mux import (MILBenchEnvMultiplexer, MuxCpuSampler,
-                                        MuxGpuSampler, MuxTaskModelWrapper)
+from mtil.algos.mtgail.embedded_bc import BCCustomRewardPPO
+from mtil.algos.mtgail.mtgail import (GAILMinibatchRl, GAILOptimiser,
+                                      MILBenchDiscriminator, RewardModel)
+from mtil.algos.mtgail.sample_mux import (MILBenchEnvMultiplexer, MuxCpuSampler,
+                                          MuxGpuSampler, MuxTaskModelWrapper)
 from mtil.algos.mtbc.mtbc import load_state_dict_or_model
 from mtil.augmentation import MILBenchAugmentations
 from mtil.common import (MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
@@ -366,7 +366,7 @@ def main(
     print("Training!")
     n_uniq_envs = len(env_ids_and_names)
     with make_logger_ctx(out_dir,
-                         "gail",
+                         "mtgail",
                          f"mt{n_uniq_envs}",
                          run_name,
                          snapshot_gap=snapshot_gap):

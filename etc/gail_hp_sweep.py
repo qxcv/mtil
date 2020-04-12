@@ -59,7 +59,7 @@ def run_gail(gpu_idx, **cfg_kwargs):
         assert cvd == str(gpu_idx), (gpu_idx, cvd)
         gpu_idx = 0
     cmd = [
-        *'xvfb-run -a python -m mtil.algos.gail'.split(),
+        *'xvfb-run -a python -m mtil.algos.mtgail'.split(),
         *f'--gpu-idx {gpu_idx} --snapshot-gap 1000'.split(),
         *f'--total-n-steps {int(1e6)}'.split(),
         *auto_args,
