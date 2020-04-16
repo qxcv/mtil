@@ -171,25 +171,29 @@ class MuxGpuSampler(MuxParallelSampler, GpuSampler):
 
 
 class EnvIDWrapper(Wrapper):
-    def __init__(self, env, numeric_id, num_envs):
+    def __init__(self, env, task_id, variant_id, num_tasks, max_num_variants):
         super().__init__(env)
-        assert isinstance(numeric_id, int)
-        self.numeric_id = np.asarray([numeric_id]).reshape(())
-        obs_space = IntBox(0, num_envs)
-        self.obs_schema = NamedTupleSchema('EnvIdSpace',
-                                           ('observation', 'env_id'))
-        self.observation_space = Composite((env.observation_space, obs_space),
-                                           self.obs_schema)
+        assert isinstance(task_id, int) and isinstance(variant_id, int)
+        self._task_id_np = np.asarray([task_id]).reshape(())
+        self._variant_id_np = np.asarray([variant_id]).reshape(())
+        task_space = IntBox(0, num_tasks)
+        variant_space = IntBox(0, max_num_variants)
+        self.obs_schema = NamedTupleSchema(
+            'EnvIdSpace', ('observation', 'task_id', 'variant_id'))
+        self.observation_space = Composite(
+            (env.observation_space, task_space, variant_space),
+            self.obs_schema)
 
     def reset(self, *args, **kwargs):
         obs = super().reset(*args, **kwargs)
-        new_obs = self.obs_schema._make((obs, self.numeric_id))
+        new_obs = self.obs_schema._make(
+            (obs, self._task_id_np, self._variant_id_np))
         return new_obs
 
     def step(self, *args, **kwargs):
         env_step = super().step(*args, **kwargs)
         new_obs = self.obs_schema._make(
-            (env_step.observation, self.numeric_id))
+            (env_step.observation, self._task_id_np, self._variant_id_np))
         return env_step._replace(observation=new_obs)
 
     @property
@@ -199,38 +203,47 @@ class EnvIDWrapper(Wrapper):
 
 
 class MILBenchEnvMultiplexer:
-    def __init__(self, env_names):
-        env_names = sorted(env_names)
-        self.env_names = env_names
-        self.n_envs = len(self.env_names)
-        self.name_to_id = {
-            name: env_id
-            for env_id, name in enumerate(self.env_names)
-        }
-        self.id_to_name = {v: k for k, v in self.name_to_id.items()}
+    """Pseudo-constructor for environments that is able to instantiate
+    environments based on a *task ID* and *variant ID*. Useful for passing to
+    rlpyt sampler constructors in order to get a different environment in each
+    sampler process."""
+    def __init__(self, variant_groups):
+        """Construct the multiplexer.
+
+        Arguments:
+            variant_groups (GroupdVariantNames): structure holding all of the
+                known tasks and task variant names. Contains task IDs too."""
+        self.variant_groups = variant_groups
 
     def get_batch_size_and_kwargs(self, min_batch_size):
-        """Compute a batch size that is >= min_batch_size and divisible by the
-        number of environments. Return both the batch size and a list of
+        """Compute an sampler batch size that is >= min_batch_size
+        and divisible by the number of environments (so total number of unique
+        (task, variant) pairs). Return both the batch size and a list of
         environment kwargs for instantiating environments with
         CpuSampler/GpuSampler/etc."""
-        assert self.n_envs > 0 and min_batch_size > 0
+        assert self.variant_groups.num_tasks > 0 \
+            and self.variant_groups.max_num_tasks > 0 \
+            and min_batch_size > 0
+        n_envs = len(self.variant_groups.task_variant_by_name)
         batch_size = min_batch_size
-        remainder = min_batch_size % self.n_envs
+        remainder = min_batch_size % n_envs
         if remainder > 0:
             batch_size += min_batch_size - remainder
-        assert batch_size % self.n_envs == 0
-        env_ids = sorted(self.id_to_name.keys())
-        multiplier = batch_size // self.n_envs
-        batch_env_kwargs = sum([[dict(env_id=env_id)] * multiplier
-                                for env_id in env_ids], [])
+        assert batch_size % n_envs == 0
+        env_keys = sorted(self.variant_groups.task_variant_by_name.values())
+        multiplier = int(np.round(batch_size / n_envs))
+        batch_env_kwargs = sum([[dict(env_key=env_key)] * multiplier
+                                for env_key in env_keys], [])
         assert len(batch_env_kwargs) == batch_size
         return batch_size, batch_env_kwargs
 
-    def __call__(self, env_id):
-        env_name = self.id_to_name[env_id]
+    def __call__(self, env_key):
+        task_id, variant_id = env_key
+        env_name = self.variant_groups.env_name_by_task_variant[env_key]
         mb_env = MILBenchGymEnv(env_name)
-        id_env = EnvIDWrapper(mb_env, env_id, self.n_envs)
+        id_env = EnvIDWrapper(mb_env, task_id, variant_id,
+                              self.variant_groups.num_tasks,
+                              self.variant_groups.max_num_tasks)
         return id_env
 
 

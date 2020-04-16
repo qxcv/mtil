@@ -579,9 +579,15 @@ def make_loader_mt(dataset, batch_size):
 def load_demos_mt(demo_paths, add_preproc=None, omit_noop=False):
     """Load multi-task demonstrations. Can apply any desired MILBench
     preprocessor as needed."""
+    # load demo pickles from disk
     demo_dicts = load_demos(demo_paths)
+
+    # splice in environment names
     orig_env_names = [d['env_name'] for d in demo_dicts]
     orig_names_uniq = sorted(set(orig_env_names))
+
+    # if necessary, update the environment names to also include a preprocessor
+    # name
     if add_preproc:
         env_names = [
             splice_in_preproc_name(orig_env_name, add_preproc)
@@ -591,7 +597,9 @@ def load_demos_mt(demo_paths, add_preproc=None, omit_noop=False):
               f"{orig_names_uniq}. New names are {sorted(set(env_names))}")
     else:
         env_names = orig_env_names
-    # pair of (original name, name with preprocessor spliced in)
+
+    # name_pairs contains pairs of (original name, name with preprocessor
+    # spliced in)
     name_pairs = sorted(set(zip(orig_env_names, env_names)))
     demo_trajs_by_env = {
         env_name: [
@@ -601,6 +609,8 @@ def load_demos_mt(demo_paths, add_preproc=None, omit_noop=False):
         for orig_env_name, env_name in name_pairs
     }
     assert sum(map(len, demo_trajs_by_env.values())) == len(demo_dicts)
+
+    # actually apply the appropriate preprocessor(s) to the loaded trajectories
     if add_preproc:
         demo_trajs_by_env = {
             env_name:
@@ -608,6 +618,9 @@ def load_demos_mt(demo_paths, add_preproc=None, omit_noop=False):
                                           orig_env_name, add_preproc)
             for orig_env_name, env_name in name_pairs
         }
+
+    # Convert the loaded trajectories into a torch Dataset. This removes
+    # temporal order.
     # TODO: add train/test split
     dataset_mt, env_name_to_id, env_id_to_name = trajectories_to_dataset_mt(
         demo_trajs_by_env, omit_noop=omit_noop)
@@ -668,19 +681,24 @@ FilteredSpec = namedtuple(
     ['id', 'reward_threshold', 'nondeterministic', 'max_episode_steps'])
 
 
-def _get_env_meta_target(env_name, rv_dict):
+def _get_env_meta_target(env_names, rv_dict):
     register_envs()  # in case this proc was spawned
-    env = gym.make(env_name)
-    spec = FilteredSpec(*(getattr(env.spec, field)
-                          for field in FilteredSpec._fields))
-    meta = EnvMeta(observation_space=env.observation_space,
-                   action_space=env.action_space,
-                   spec=spec)
-    rv_dict['result'] = meta
-    env.close()
+    metas = []
+    for env_name in env_names:
+        # construct a bunch of envs in turn to get info about their observation
+        # spaces, action spaces, etc.
+        env = gym.make(env_name)
+        spec = FilteredSpec(*(getattr(env.spec, field)
+                            for field in FilteredSpec._fields))
+        meta = EnvMeta(observation_space=env.observation_space,
+                       action_space=env.action_space,
+                       spec=spec)
+        metas.append(meta)
+        env.close()
+    rv_dict['result'] = tuple(meta)
 
 
-def get_env_meta(env_name, ctx=multiprocessing):
+def get_env_metas(*env_names, ctx=multiprocessing):
     """Spawn a subprocess and use that to get metadata about an environment
     (env_spec, observation_space, action_space, etc.). Can optionally be passed
     a custom multiprocessing context to spawn subprocess with (e.g. so you can
@@ -693,7 +711,7 @@ def get_env_meta(env_name, ctx=multiprocessing):
     inscrutable resource errors."""
     mgr = ctx.Manager()
     rv_dict = mgr.dict()
-    proc = ctx.Process(target=_get_env_meta_target, args=(env_name, rv_dict))
+    proc = ctx.Process(target=_get_env_meta_target, args=(env_names, rv_dict))
     try:
         proc.start()
         proc.join(30)
@@ -702,7 +720,7 @@ def get_env_meta(env_name, ctx=multiprocessing):
     if proc.exitcode != 0:
         raise multiprocessing.ProcessError(
             f"nonzero exit code {proc.exitcode} when collecting metadata "
-            f"for '{env_name}'")
+            f"for '{env_names}'")
     result = rv_dict['result']
     return result
 

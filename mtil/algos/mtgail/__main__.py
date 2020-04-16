@@ -8,7 +8,6 @@ that parts of the implementation can be pickled."""
 import multiprocessing as mp
 import os
 import readline  # noqa: F401
-import warnings
 
 import click
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
@@ -16,16 +15,18 @@ from rlpyt.utils.logging import logger
 import torch
 
 # TODO: factor load_state_dict_or_model from mtbc out into common
+from mtil.algos.mtbc.mtbc import load_state_dict_or_model
+from mtil.algos.mtgail.demos import load_demos_mtgail
 from mtil.algos.mtgail.embedded_bc import BCCustomRewardPPO
 from mtil.algos.mtgail.mtgail import (GAILMinibatchRl, GAILOptimiser,
                                       MILBenchDiscriminator, RewardModel)
-from mtil.algos.mtgail.sample_mux import (MILBenchEnvMultiplexer, MuxCpuSampler,
-                                          MuxGpuSampler, MuxTaskModelWrapper)
-from mtil.algos.mtbc.mtbc import load_state_dict_or_model
+from mtil.algos.mtgail.sample_mux import (MILBenchEnvMultiplexer,
+                                          MuxCpuSampler, MuxGpuSampler,
+                                          MuxTaskModelWrapper)
 from mtil.augmentation import MILBenchAugmentations
-from mtil.common import (MILBenchTrajInfo, MultiHeadPolicyNet, get_env_meta,
-                         load_demos_mt, make_loader_mt, make_logger_ctx,
-                         sane_click_init, set_seeds)
+from mtil.common import (MILBenchTrajInfo, MultiHeadPolicyNet, get_env_metas,
+                         make_loader_mt, make_logger_ctx, sane_click_init,
+                         set_seeds)
 from mtil.reward_injection_wrappers import RewardEvaluator
 
 
@@ -102,7 +103,7 @@ def cli():
 @click.option("--danger-override-env-name",
               type=str,
               default=None,
-              help="override env name in demos (and any preprocessors etc.)")
+              help="Do rollouts in this env instead of the demo one")
 @click.option('--disc-lr', default=1e-3, help='discriminator learning rate')
 @click.option('--disc-use-act/--no-disc-use-act',
               default=True,
@@ -119,6 +120,7 @@ def cli():
               default=False,
               help='whether to normalise PPO advantages')
 @click.option("--transfer-variant",
+              'transfer_variants',
               default=[],
               multiple=True,
               help="name of transfer env for co-training (can be repeated)")
@@ -143,7 +145,7 @@ def main(
         omit_noop,
         disc_replay_mult,
         disc_aug,
-        transfer_variant,
+        transfer_variants,
         danger_debug_reward_weight,
         danger_override_env_name,
         # new sweep hyperparams:
@@ -185,32 +187,30 @@ def main(
     milbench.register_envs()
 
     # load demos (this code copied from bc.py in original baselines)
-    dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
-        = load_demos_mt(demos, add_preproc, omit_noop=omit_noop)
-    # loader_mt = make_loader_mt(dataset_mt, disc_batch_size // 2)
-    env_ids_and_names = [(name, env_name_to_id[name])
-                         for _, name in name_pairs]
-    assert len(env_ids_and_names) == 1, \
-        "GAIL doesn't support multi-task training (YET)"
-    (env_name, env_id), = env_ids_and_names
+    dataset_mt, variant_groups = load_demos_mtgail(demos,
+                                                   transfer_variants,
+                                                   mb_preproc=add_preproc,
+                                                   omit_noop=omit_noop)
+    # (env_name, env_id), = env_ids_and_names
     if danger_override_env_name:
-        warnings.warn(f"Overriding environment name {env_name} with "
-                      f"{danger_override_env_name}")
-        env_name = danger_override_env_name
+        raise NotImplementedError(
+            "haven't re-implemeneted env name override for multi-task GAIL")
 
     print("Getting env metadata")
     # local copy of Gym env, w/ args to create equivalent env in the sampler
-    all_env_names = [env_name] + list(transfer_variant)
-    env_mux = MILBenchEnvMultiplexer(all_env_names)
+    env_mux = MILBenchEnvMultiplexer(variant_groups)
     new_sampler_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(
         sampler_batch_B)
+    all_env_names = sorted(variant_groups.task_variant_by_name.keys())
     if new_sampler_batch_B != sampler_batch_B:
         print(f"Increasing sampler batch size from '{sampler_batch_B}' to "
               f"'{new_sampler_batch_B}' to be divisible by number of "
               f"environments ({len(all_env_names)})")
         sampler_batch_B = new_sampler_batch_B
 
-    env_meta = get_env_meta(env_name)
+    env_metas = get_env_metas(*all_env_names)
+    max_steps = max(
+        [env_meta.spec.max_episode_steps for env_meta in env_metas])
     # number of transitions collected during each round of sampling will be
     # batch_T * batch_B = n_steps * n_envs
 
@@ -222,28 +222,39 @@ def main(
     sampler = sampler_ctor(
         env_mux,
         env_ctor_kwargs,
-        max_decorrelation_steps=env_meta.spec.max_episode_steps,
+        max_decorrelation_steps=max_steps,
         TrajInfoCls=MILBenchTrajInfo,
         batch_T=sampler_batch_T,
         batch_B=sampler_batch_B)
 
     print("Setting up agent")
     # should be (H,W,C) even w/ frame stack
-    assert len(env_meta.observation_space.shape) == 3, \
-        env_meta.observation_space.shape
-    in_chans = env_meta.observation_space.shape[-1]
-    n_actions = env_meta.action_space.n  # categorical action space
+    # TODO: factor out getting max_steps, observation_space, action_space, etc.
+    obs_space = env_metas[0].observation_space
+    act_space = env_metas[0].action_space
+    assert all(em.observation_space == obs_space for em in env_metas)
+    assert all(em.action_space == act_space for em in env_metas)
+    assert len(obs_space.shape) == 3, obs_space.shape
+    in_chans = obs_space.shape[-1]
+    n_actions = act_space.n  # categorical action space
+    task_ids_and_demo_env_names = [
+        (env_name[0], task_id)
+        for env_name, (task_id, _) in variant_groups.task_variant_by_name
+    ]
     model_ctor = MultiHeadPolicyNet
     model_kwargs = dict(in_chans=in_chans,
                         n_actions=n_actions,
-                        env_ids_and_names=env_ids_and_names)
-    ppo_agent = CategoricalPgAgent(ModelCls=MuxTaskModelWrapper,
-                                   model_kwargs=dict(
-                                       model_ctor=model_ctor,
-                                       # task_id=env_id,
-                                       model_kwargs=model_kwargs))
+                        env_ids_and_names=task_ids_and_demo_env_names)
+    ppo_agent = CategoricalPgAgent(
+        ModelCls=MuxTaskModelWrapper,
+        model_kwargs=dict(
+            model_ctor=model_ctor,
+            # task_id=env_id,
+            model_kwargs=model_kwargs))
 
     print("Setting up discriminator/reward model")
+    # TODO: make all of these multi-task!
+    raise NotImplementedError("need to make discirminator etc. multi-task")
     discriminator = MILBenchDiscriminator(
         in_chans=in_chans,
         act_dim=n_actions,
@@ -364,7 +375,7 @@ def main(
         torch.save(policy_copy_mt, init_pol_snapshot_path)
 
     print("Training!")
-    n_uniq_envs = len(env_ids_and_names)
+    n_uniq_envs = len(all_env_names)
     with make_logger_ctx(out_dir,
                          "mtgail",
                          f"mt{n_uniq_envs}",
