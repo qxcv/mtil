@@ -219,13 +219,12 @@ def main(
         sampler_ctor = MuxGpuSampler
     else:
         sampler_ctor = MuxCpuSampler
-    sampler = sampler_ctor(
-        env_mux,
-        env_ctor_kwargs,
-        max_decorrelation_steps=max_steps,
-        TrajInfoCls=MILBenchTrajInfo,
-        batch_T=sampler_batch_T,
-        batch_B=sampler_batch_B)
+    sampler = sampler_ctor(env_mux,
+                           env_ctor_kwargs,
+                           max_decorrelation_steps=max_steps,
+                           TrajInfoCls=MILBenchTrajInfo,
+                           batch_T=sampler_batch_T,
+                           batch_B=sampler_batch_B)
 
     print("Setting up agent")
     # should be (H,W,C) even w/ frame stack
@@ -239,7 +238,8 @@ def main(
     n_actions = act_space.n  # categorical action space
     task_ids_and_demo_env_names = [
         (env_name[0], task_id)
-        for env_name, (task_id, _) in variant_groups.task_variant_by_name
+        for env_name, (task_id,
+                       _) in variant_groups.task_variant_by_name.items()
     ]
     model_ctor = MultiHeadPolicyNet
     model_kwargs = dict(in_chans=in_chans,

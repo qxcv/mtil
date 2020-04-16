@@ -695,7 +695,7 @@ def _get_env_meta_target(env_names, rv_dict):
                        spec=spec)
         metas.append(meta)
         env.close()
-    rv_dict['result'] = tuple(meta)
+    rv_dict['result'] = tuple(metas)
 
 
 def get_env_metas(*env_names, ctx=multiprocessing):

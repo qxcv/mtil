@@ -4,22 +4,42 @@ TODO: unify this with code in common.py. Really this should replace that code
 because it's much cleaner :)"""
 
 import collections
-import functools
 
 from milbench.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 from milbench.benchmarks import EnvName
+import numpy as np
 import torch
 from torch.utils import data
 
-from mtil.algos.mtgail.sample_mux import EnvIDWrapper
+from mtil.algos.mtgail.sample_mux import EnvIDObsArray
 
 
+def _tree_map(f, *structures):
+    s0 = structures[0]
+    if hasattr(s0, '_fields'):
+        # namedtuple, NamedTuple, namedarraytuple etc.
+        return s0._make(_tree_map(f, *zs) for zs in zip(*structures))
+    elif isinstance(s0, (list, tuple)):
+        return type(s0)(_tree_map(f, *zs) for zs in zip(*structures))
+    elif isinstance(s0, (dict, collections.OrderedDict)):
+        return type(s0)(
+            (k, _tree_map(f, *(s[k] for s in structures))) for k in s0.keys())
+    return f(*structures)
+
+
+# FIXME: is it even worth dealing with dicts? Instead should I just make
+# EVERYTHING into a namedarraytuple?
 class DictTensorDataset(data.Dataset):
     def __init__(self, tensor_dict):
+        # need at least one tensor
         assert len(tensor_dict) > 0
-        batch_sizes = [tensor.size(0) for tensor in tensor_dict.values()]
-        assert all(batch_sizes[0] == batch_size for batch_size in batch_sizes)
+
+        # make sure batch size is uniform
+        batch_sizes = set()
+        _tree_map(lambda t: batch_sizes.add(t.size(0)), tensor_dict)
+        assert len(batch_sizes) == 1, batch_sizes
+
         self.tensor_dict = tensor_dict
 
     def __getitem__(self, index):
@@ -41,7 +61,9 @@ def make_tensor_dict_dataset(demo_trajs_by_env, omit_noop=False):
         demo_trajs = demo_trajs_by_env[env_name]
         n_samples = 0
         for traj in demo_trajs:
-            all_obs.append(torch.as_tensor(traj.obs[:-1], device=cpu_dev))
+            all_obs.append(
+                _tree_map(lambda t: torch.as_tensor(t, device=cpu_dev),
+                          traj.obs))
             all_acts.append(torch.as_tensor(traj.acts, device=cpu_dev))
             n_samples += len(traj.acts)
 
@@ -49,17 +71,17 @@ def make_tensor_dict_dataset(demo_trajs_by_env, omit_noop=False):
         assert n_samples > 0, demo_trajs
 
     # join together trajectories into Torch dataset
-    all_obs = torch.cat(all_obs)
+    all_obs = _tree_map(lambda *t: torch.cat(t), *all_obs)
     all_acts = torch.cat(all_acts)
 
     if omit_noop:
         # omit action 0 (helps avoid the "agent does nothing initially" problem
         # for MILBench)
         valid_inds = torch.squeeze(torch.nonzero(all_acts), 1)
-        all_obs = all_obs[valid_inds]
+        all_obs = _tree_map(lambda t: t[valid_inds], all_obs)
         all_acts = all_acts[valid_inds]
 
-    dataset = data.DictTensorDataset({
+    dataset = DictTensorDataset({
         'obs': all_obs,
         'acts': all_acts,
     })
@@ -78,7 +100,7 @@ class GroupedVariantNames:
     def __init__(self, demo_env_names, variant_env_names):
         demo_names_uniq = sorted(set(demo_env_names))
         var_names_uniq = sorted(set(variant_env_names))
-        intersect = sorted(demo_names_uniq & var_names_uniq)
+        intersect = sorted(set(demo_names_uniq) & set(var_names_uniq))
         if intersect:
             raise ValueError(
                 "original names ({orig_names_uniq}) and variant names "
@@ -110,7 +132,7 @@ class GroupedVariantNames:
         # invert to map from (task id, variant id) back to env name
         self.env_name_by_task_variant = {
             value: key
-            for key, value in self.task_variant_by_name
+            for key, value in self.task_variant_by_name.items()
         }
 
     @property
@@ -118,7 +140,7 @@ class GroupedVariantNames:
         return len(self.name_by_prefix)
 
     @property
-    def max_num_tasks(self):
+    def max_num_variants(self):
         return max(map(len, self.name_by_prefix.values()))
 
 
@@ -130,34 +152,49 @@ def add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc):
     # update the names of the demo envs (& keep map between new & old
     # names)
     new_demo_env_names = []
-    orig_to_new_name = {}
+    new_env_names = {}
     for old_name in demo_env_names:
-        new_name = splice_in_preproc_name(old_name, add_mb_preproc)
+        new_name = splice_in_preproc_name(old_name, mb_preproc)
         new_demo_env_names.append(new_name)
-        orig_to_new_name[old_name] = new_name
+        new_env_names[old_name] = new_name
     demo_env_names = new_demo_env_names
     del new_demo_env_names
 
-    # update names of variant envs (don't need mapping this time)
-    variant_names = [
-        splice_in_preproc_name(variant_name, add_mb_preproc)
-        for variant_name in variant_names
-    ]
+    # update names of variant envs (don't don't need mapping for these ones,
+    # but whatever)
+    new_variant_names = []
+    for variant_name in variant_names:
+        new_variant_name = splice_in_preproc_name(variant_name, mb_preproc)
+        new_variant_names.append(new_variant_name)
+        new_env_names[variant_name] = new_variant_name
+    variant_names = new_variant_names
+    del new_variant_names
 
     # debug print to tell us what names changed
     _new_names = demo_env_names + variant_names
     print(f"Splicing preprocessor '{add_mb_preproc}' into environments "
           f"{_orig_names}. New names are {_new_names}")
+    del _orig_names, _new_names
 
     # apply appropriate preprocessors
     demo_trajs_by_env = {
-        orig_to_new_name[orig_env_name]:
+        new_env_names[orig_env_name]:
         preprocess_demos_with_wrapper(demo_trajs_by_env[orig_env_name],
                                       orig_env_name, mb_preproc)
         for orig_env_name, traj in demo_trajs_by_env.items()
     }
 
     return demo_trajs_by_env, demo_env_names, variant_names
+
+
+def insert_task_ids(obs_seq, task_id, variant_id):
+    nobs = len(obs_seq.obs)
+    task_id_array = np.full((nobs, ), task_id, dtype='int32')
+    variant_id_array = np.full((nobs, ), variant_id, dtype='int32')
+    eio_arr = EnvIDObsArray(observation=obs_seq.obs,
+                            task_id=task_id_array,
+                            variant_id=variant_id_array)
+    return obs_seq._replace(obs=eio_arr)
 
 
 def load_demos_mtgail(demo_paths,
@@ -174,21 +211,17 @@ def load_demos_mtgail(demo_paths,
     # if necessary, update the environment names to also include a preprocessor
     # name
     if add_mb_preproc:
-        demo_trajs_by_env, demo_env_names, variant_names = add_mb_preproc(
-            demo_trajs_by_env, variant_names, mb_preproc)
+        demo_trajs_by_env, demo_env_names, variant_names \
+            = add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc)
 
     # now make a grouped index of env names & add env IDs to observations
     variant_groups = GroupedVariantNames(demo_env_names, variant_names)
     for env_name in demo_trajs_by_env.keys():
         task_id, variant_id = variant_groups.task_variant_by_name[env_name]
-        demo_trajs_by_env[env_name] = preprocess_demos_with_wrapper(
-            demo_trajs_by_env[env_name],
-            wrapper=functools.partial(
-                EnvIDWrapper,
-                task_id=task_id,
-                variant_id=variant_id,
-                num_tasks=variant_groups.num_tasks,
-                max_num_variants=variant_groups.max_num_variants))
+        demo_trajs_by_env[env_name] = [
+            insert_task_ids(traj, task_id, variant_id)
+            for traj in demo_trajs_by_env[env_name]
+        ]
 
     # Convert the loaded trajectories into a torch Dataset. This removes
     # temporal order.

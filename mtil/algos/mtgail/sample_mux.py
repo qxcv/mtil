@@ -19,7 +19,8 @@ from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.samplers.parallel.worker import initialize_worker
 from rlpyt.spaces.composite import Composite
 from rlpyt.spaces.int_box import IntBox
-from rlpyt.utils.collections import AttrDict, NamedTupleSchema
+from rlpyt.utils.collections import (AttrDict, NamedArrayTupleSchema,
+                                     NamedTupleSchema)
 from rlpyt.utils.logging import logger
 from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
@@ -170,6 +171,11 @@ class MuxGpuSampler(MuxParallelSampler, GpuSampler):
     pass
 
 
+EnvIDObs = NamedTupleSchema(
+            'EnvIDObs', ('observation', 'task_id', 'variant_id'))
+EnvIDObsArray = NamedArrayTupleSchema(EnvIDObs._typename, EnvIDObs._fields)
+
+
 class EnvIDWrapper(Wrapper):
     def __init__(self, env, task_id, variant_id, num_tasks, max_num_variants):
         super().__init__(env)
@@ -178,23 +184,23 @@ class EnvIDWrapper(Wrapper):
         self._variant_id_np = np.asarray([variant_id]).reshape(())
         task_space = IntBox(0, num_tasks)
         variant_space = IntBox(0, max_num_variants)
-        self.obs_schema = NamedTupleSchema(
-            'EnvIdSpace', ('observation', 'task_id', 'variant_id'))
         self.observation_space = Composite(
             (env.observation_space, task_space, variant_space),
             self.obs_schema)
 
     def reset(self, *args, **kwargs):
         obs = super().reset(*args, **kwargs)
-        new_obs = self.obs_schema._make(
-            (obs, self._task_id_np, self._variant_id_np))
-        return new_obs
+        return self.wrap_obs(obs)
 
     def step(self, *args, **kwargs):
         env_step = super().step(*args, **kwargs)
-        new_obs = self.obs_schema._make(
-            (env_step.observation, self._task_id_np, self._variant_id_np))
+        new_obs = self.wrap_obs(env_step.observation)
         return env_step._replace(observation=new_obs)
+
+    def wrap_obs(self, obs):
+        new_obs = EnvIDObs._make(
+            (obs, self._task_id_np, self._variant_id_np))
+        return new_obs
 
     @property
     def spaces(self):
@@ -222,7 +228,7 @@ class MILBenchEnvMultiplexer:
         environment kwargs for instantiating environments with
         CpuSampler/GpuSampler/etc."""
         assert self.variant_groups.num_tasks > 0 \
-            and self.variant_groups.max_num_tasks > 0 \
+            and self.variant_groups.max_num_variants > 0 \
             and min_batch_size > 0
         n_envs = len(self.variant_groups.task_variant_by_name)
         batch_size = min_batch_size
@@ -243,7 +249,7 @@ class MILBenchEnvMultiplexer:
         mb_env = MILBenchGymEnv(env_name)
         id_env = EnvIDWrapper(mb_env, task_id, variant_id,
                               self.variant_groups.num_tasks,
-                              self.variant_groups.max_num_tasks)
+                              self.variant_groups.max_num_varaints)
         return id_env
 
 
