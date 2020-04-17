@@ -1,10 +1,11 @@
 """Common tools for all of mtil package."""
 
-from collections import namedtuple
+from collections import OrderedDict, namedtuple
 import datetime
 import multiprocessing
 import os
 import random
+import re
 import sys
 import uuid
 import warnings
@@ -22,8 +23,10 @@ from rlpyt.utils.logging import logger
 from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 from torch import nn
+from torch._six import container_abcs, int_classes, string_classes
 import torch.nn.functional as F
 from torch.utils import data
+from torch.utils.data.dataloader import default_collate
 import torchvision.utils as vutils
 
 
@@ -545,12 +548,60 @@ def trajectories_to_dataset_mt(demo_trajs_by_env, omit_noop=False):
     return dataset, env_name_to_id, env_id_to_name
 
 
+_default_collate_err_msg_format = (
+    "default_collate: batch must contain tensors, numpy arrays, numbers, "
+    "dicts or lists; found {}")
+_np_str_obj_array_pattern = re.compile(r'[SaUO]')
+
+
+def fixed_default_collate(batch):
+    """Copy-paste of `default_collate` for Torch's `DataLoader` class, but
+    constructs namedtuples using `._make` instead of constructor (this
+    accommodates the weird duck typing in rlpyt)."""
+    elem = batch[0]
+    elem_type = type(elem)
+    if isinstance(elem, (float, torch.Tensor)) or \
+       isinstance(elem, int_classes) or isinstance(elem, string_classes):
+        # let the original impl. handle these non-recursive cases
+        return default_collate(batch)
+    elif elem_type.__module__ == 'numpy' and elem_type.__name__ != 'str_' \
+            and elem_type.__name__ != 'string_':
+        # COPIED
+        elem = batch[0]
+        if elem_type.__name__ == 'ndarray':
+            # array of string classes and object
+            if _np_str_obj_array_pattern.search(elem.dtype.str) is not None:
+                raise TypeError(
+                    _default_collate_err_msg_format.format(elem.dtype))
+
+            return fixed_default_collate([torch.as_tensor(b) for b in batch])
+        elif elem.shape == ():  # scalars
+            return torch.as_tensor(batch)
+    elif isinstance(elem, container_abcs.Mapping):
+        # COPIED
+        return {
+            key: fixed_default_collate([d[key] for d in batch])
+            for key in elem
+        }
+    elif isinstance(elem, tuple) and hasattr(elem, '_fields'):  # namedtuple
+        # CHANGED: now uses elem._make() instead of type(elem)()
+        return elem._make(
+            tuple(fixed_default_collate(samples) for samples in zip(*batch)))
+    elif isinstance(elem, container_abcs.Sequence):
+        # COPIED
+        transposed = zip(*batch)
+        return [fixed_default_collate(samples) for samples in transposed]
+
+    # defer to original impl. for error handling etc.
+    return default_collate(batch)
+
+
 def make_loader_mt(dataset, batch_size):
     """Construct sampler that randomly chooses N items from N-sample dataset,
     weighted so that it's even across all tasks (so no task implicitly has
     higher priority than the others). Assumes the given dataset is a
     TensorDataset produced by trajectories_to_dataset_mt."""
-    task_ids = dataset.tensors[0]
+    task_ids = dataset.tensor_dict['obs'].task_id
     unique_ids, frequencies = torch.unique(task_ids,
                                            return_counts=True,
                                            sorted=True)
@@ -569,7 +620,8 @@ def make_loader_mt(dataset, batch_size):
 
     loader = data.DataLoader(dataset,
                              pin_memory=False,
-                             batch_sampler=batch_sampler)
+                             batch_sampler=batch_sampler,
+                             collate_fn=fixed_default_collate)
 
     return loader
 
@@ -689,7 +741,7 @@ def _get_env_meta_target(env_names, rv_dict):
         # spaces, action spaces, etc.
         env = gym.make(env_name)
         spec = FilteredSpec(*(getattr(env.spec, field)
-                            for field in FilteredSpec._fields))
+                              for field in FilteredSpec._fields))
         meta = EnvMeta(observation_space=env.observation_space,
                        action_space=env.action_space,
                        spec=spec)
@@ -852,3 +904,18 @@ def mixup(*tensors, alpha=0.2):
         out_tensors.append(result)
 
     return tuple(out_tensors)
+
+
+def tree_map(f, *structures):
+    """Map a function `f` over some sequence of complicated data structures.
+    They could be dicts, lists, namedarratuples, etc. etc."""
+    s0 = structures[0]
+    if hasattr(s0, '_fields'):
+        # namedtuple, NamedTuple, namedarraytuple etc.
+        return s0._make(tree_map(f, *zs) for zs in zip(*structures))
+    elif isinstance(s0, (list, tuple)):
+        return type(s0)(tree_map(f, *zs) for zs in zip(*structures))
+    elif isinstance(s0, (dict, OrderedDict)):
+        return type(s0)(
+            (k, tree_map(f, *(s[k] for s in structures))) for k in s0.keys())
+    return f(*structures)

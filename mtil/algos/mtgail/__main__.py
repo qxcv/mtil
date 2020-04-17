@@ -19,7 +19,7 @@ from mtil.algos.mtbc.mtbc import load_state_dict_or_model
 from mtil.algos.mtgail.demos import load_demos_mtgail
 from mtil.algos.mtgail.embedded_bc import BCCustomRewardPPO
 from mtil.algos.mtgail.mtgail import (GAILMinibatchRl, GAILOptimiser,
-                                      MILBenchDiscriminator, RewardModel)
+                                      MILBenchDiscriminatorMT, RewardModel)
 from mtil.algos.mtgail.sample_mux import (MILBenchEnvMultiplexer,
                                           MuxCpuSampler, MuxGpuSampler,
                                           MuxTaskModelWrapper)
@@ -27,7 +27,7 @@ from mtil.augmentation import MILBenchAugmentations
 from mtil.common import (MILBenchTrajInfo, MultiHeadPolicyNet, get_env_metas,
                          make_loader_mt, make_logger_ctx, sane_click_init,
                          set_seeds)
-from mtil.reward_injection_wrappers import RewardEvaluator
+from mtil.reward_injection_wrappers import RewardEvaluatorMT
 
 
 @click.group()
@@ -254,16 +254,17 @@ def main(
 
     print("Setting up discriminator/reward model")
     # TODO: make all of these multi-task!
-    raise NotImplementedError("need to make discirminator etc. multi-task")
-    discriminator = MILBenchDiscriminator(
+    discriminator_mt = MILBenchDiscriminatorMT(
+        task_ids_and_names=task_ids_and_demo_env_names,
         in_chans=in_chans,
         act_dim=n_actions,
         use_all_chans=disc_all_frames,
         use_actions=disc_use_act,
     ).to(dev)
-    reward_model = RewardModel(discriminator).to(dev)
-    reward_evaluator = RewardEvaluator(
-        reward_model,
+    reward_model_mt = RewardModel(discriminator_mt).to(dev)
+    reward_evaluator_mt = RewardEvaluatorMT(
+        task_ids_and_names=task_ids_and_demo_env_names,
+        reward_model=reward_model_mt,
         obs_dims=3,
         batch_size=disc_batch_size,
         normalise=True,
@@ -310,7 +311,7 @@ def main(
                                  expert_traj_loader=ppo_loader_mt,
                                  true_reward_weight=danger_debug_reward_weight,
                                  **ppo_hyperparams)
-    ppo_algo.set_reward_evaluator(reward_evaluator)
+    ppo_algo.set_reward_evaluator(reward_evaluator_mt)
 
     print("Setting up optimiser")
     if disc_aug:
@@ -322,7 +323,9 @@ def main(
         print("Discriminator augmentations off")
         aug_model = None
     gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
-                               discrim_model=discriminator,
+                               # TODO: update GAILOptimiser to use multi-task
+                               # discrim
+                               discrim_model=discriminator_mt,
                                buffer_num_samples=max(
                                    disc_batch_size, disc_replay_mult *
                                    sampler_batch_T * sampler_batch_B),
@@ -349,6 +352,7 @@ def main(
         log_interval_steps=log_interval_steps,
         affinity=affinity)
 
+    # TODO: factor out this callback
     def init_policy_cb(runner):
         """Callback which gets called once after Runner startup to save an
         initial policy model, and optionally load saved parameters."""
@@ -382,7 +386,7 @@ def main(
                          run_name,
                          snapshot_gap=snapshot_gap):
         torch.save(
-            discriminator,
+            discriminator_mt,
             os.path.join(logger.get_snapshot_dir(), 'full_discrim_model.pt'))
         # note that periodic snapshots get saved by GAILMiniBatchRl, thanks to
         # the overridden get_itr_snapshot() method

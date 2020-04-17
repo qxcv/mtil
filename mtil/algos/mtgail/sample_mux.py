@@ -186,7 +186,7 @@ class EnvIDWrapper(Wrapper):
         variant_space = IntBox(0, max_num_variants)
         self.observation_space = Composite(
             (env.observation_space, task_space, variant_space),
-            self.obs_schema)
+            EnvIDObs)
 
     def reset(self, *args, **kwargs):
         obs = super().reset(*args, **kwargs)
@@ -249,7 +249,7 @@ class MILBenchEnvMultiplexer:
         mb_env = MILBenchGymEnv(env_name)
         id_env = EnvIDWrapper(mb_env, task_id, variant_id,
                               self.variant_groups.num_tasks,
-                              self.variant_groups.max_num_varaints)
+                              self.variant_groups.max_num_variants)
         return id_env
 
 
@@ -263,12 +263,11 @@ class MuxTaskModelWrapper(AgentModelWrapper):
 
     def forward(self, obs, prev_act, prev_rew):
         # similar to AgentModelWrapper.forward(), but also constructs task IDs
-        obs_image, env_id = obs.observation, obs.env_id
-        env_id = 0 * env_id  # FIXME: actually use the env_id :)
+        obs_image, task_id = obs.observation, obs.task_id
         del obs  # defensive, avoid using tuple obs
         lead_dim, T, B, img_shape = infer_leading_dims(obs_image, 3)
-        task_ids = env_id.view((T * B, )).to(device=obs_image.device,
-                                             dtype=torch.long)
+        task_ids = task_id.view((T * B, )).to(device=obs_image.device,
+                                              dtype=torch.long)
         logits, v = self.model(obs_image.view(T * B, *img_shape), task_ids)
         pi = F.softmax(logits, dim=-1)
         pi, v = restore_leading_dims((pi, v), lead_dim, T, B)

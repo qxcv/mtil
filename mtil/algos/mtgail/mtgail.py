@@ -14,7 +14,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from mtil.common import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
-                         make_loader_mt)
+                         MultiTaskAffineLayer, make_loader_mt, tree_map)
 
 DiscrimReplaySamples = namedarraytuple("DiscrimReplaySamples",
                                        ["all_observation", "all_action"])
@@ -69,14 +69,17 @@ class DiscrimTrainBuffer:
         return self.circ_buf[inds_to_sample]
 
 
-class MILBenchDiscriminator(nn.Module):
+class MILBenchDiscriminatorMT(nn.Module):
     def __init__(self,
+                 task_ids_and_names,
                  in_chans,
                  act_dim,
                  use_actions,
                  use_all_chans,
+                 fc_dim=256,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
+        self.task_ids_and_names = task_ids_and_names
         self.act_dim = act_dim
         self.in_chans = in_chans
         self.use_all_chans = use_all_chans
@@ -90,31 +93,36 @@ class MILBenchDiscriminator(nn.Module):
             assert in_chans >= 3 and (in_chans % 3) == 0, in_chans
             feat_in_chans = 3
         self.feature_extractor = MILBenchFeatureNetwork(
-            in_chans=feat_in_chans, out_chans=256, ActivationCls=ActivationCls)
+            in_chans=feat_in_chans,
+            out_chans=fc_dim,
+            ActivationCls=ActivationCls)
         extra_dim = act_dim if use_actions else 0
         # the logit generator takes in both the image features and the
         # act_dim-dimensional action (probably just a one-hot vector)
-        self.logit_generator = nn.Sequential(
-            nn.Linear(256 + extra_dim, 256),
+        self.postproc = nn.Sequential(
+            nn.Linear(fc_dim + extra_dim, fc_dim),
             ActivationCls(),
-            # now: flat 256-elem vector
-            nn.Linear(256, 1),
-            # now: 1-dimensional logits for a sigmoid activation
+            # now: flat fc_dim-elem vector
         )
+        self.mt_logits = MultiTaskAffineLayer(fc_dim, 1,
+                                              len(self.task_ids_and_names))
+        # TODO: remove self.logit_generator, replace with self.postproc and
+        # self.mt_logits
 
     def forward(self, obs, act):
-        lead_dim, T, B, img_shape = infer_leading_dims(obs, 3)  # images only
+        # this only handles images
+        lead_dim, T, B, img_shape = infer_leading_dims(obs.observation, 3)
         lead_dim_act, T_act, B_act, act_shape = infer_leading_dims(act, 0)
         assert (lead_dim, T, B) == (lead_dim_act, T_act, B_act)
 
         if self.use_all_chans:
-            obs_trimmed = obs
+            obs_trimmed = obs.observation
             trimmed_img_shape = img_shape
         else:
             # don't use all channels, just use the last three (i.e. last image
             # in the stack, in RGB setting)
             assert obs.shape[-1] == self.in_chans
-            obs_trimmed = obs[..., -3:]
+            obs_trimmed = obs.observation[..., -3:]
             trimmed_img_shape = (*img_shape[:-1], obs_trimmed.shape[-1])
         obs_reshape = obs_trimmed.view((T * B, *trimmed_img_shape))
         obs_preproc = self.preproc(obs_reshape)
@@ -126,7 +134,8 @@ class MILBenchDiscriminator(nn.Module):
             all_features = torch.cat((obs_features, acts_one_hot), dim=1)
         else:
             all_features = obs_features
-        logits = self.logit_generator(all_features)
+        lin_features = self.postproc(all_features)
+        logits = self.mt_logits(lin_features, obs.task_id)
         assert logits.dim() == 2, logits.shape
         flat_logits = logits.squeeze(1)
 
@@ -142,10 +151,10 @@ class RewardModel(nn.Module):
         super().__init__()
         self.discrim = discrim
 
-    def forward(self, obs, act):
+    def forward(self, obs, act, *args, **kwargs):
         """GAIL policy reward, without entropy bonus (should be introduced
         elsewhere). Policy should maximise this."""
-        sigmoid_logits = self.discrim(obs, act)
+        sigmoid_logits = self.discrim(obs, act, *args, **kwargs)
         # In the GAIL paper they use this as the cost (i.e. they minimise it).
         # I'm maximising it to be consistent with the reference implementation,
         # where the conventions for discriminator output are reversed (so high
@@ -225,9 +234,9 @@ class GAILOptimiser:
         if self.pol_replay_buffer is None:
             self.pol_replay_buffer = DiscrimTrainBuffer(
                 self.buffer_num_samples, samples)
-        # TODO: proper support for env IDs in multi-task setting
-        sample_env_ids = samples.env.observation.env_id
-        keep_mask = sample_env_ids == 0
+        # keep ONLY the demo env samples
+        sample_variant_ids = samples.env.observation.variant_id
+        keep_mask = sample_variant_ids == 0
         # check that each batch index is "pure", in sense that e.g. all
         # elements at index k are always for the same task ID
         assert (keep_mask[:1] == keep_mask).all(), keep_mask
@@ -240,19 +249,21 @@ class GAILOptimiser:
         for _ in range(self.updates_per_itr):
             self.opt.zero_grad()
 
-            task_ids, expert_obs, expert_acts = next(self.expert_batch_iter)
-            # grep for SamplesFromReplay to see what fields pol_replay_samples
-            # has
+            expert_data = next(self.expert_batch_iter)
+            expert_obs = expert_data['obs']
+            expert_acts = expert_data['acts']
+            # grep rlpyt source for "SamplesFromReplay" to see what fields
+            # pol_replay_samples has
             pol_replay_samples = self.pol_replay_buffer.sample_batch(
                 self.batch_size // 2)
             pol_replay_samples = torchify_buffer(pol_replay_samples)
-            expert_images = pol_replay_samples.all_observation.observation
-            # TODO: make use of expert env IDs
-            # expert_ids = pol_replay_samples.all_observation.env_id
-            all_obs = torch.cat([expert_obs, expert_images]).to(self.dev)
+            novice_obs = pol_replay_samples.all_observation
+            all_obs = tree_map(lambda *args: torch.cat(args, 0), expert_obs,
+                               novice_obs)
             if self.aug_model is not None:
                 # augmentations
-                all_obs = self.aug_model(all_obs)
+                all_obs = all_obs._replace(
+                    observation=self.aug_model(all_obs.observation))
             all_acts = torch.cat([expert_acts.to(torch.int64),
                                   pol_replay_samples.all_action],
                                  dim=0) \
@@ -338,10 +349,9 @@ class GAILMinibatchRl(MinibatchRl):
                 gail_info = self.gail_optim.optim_disc(itr, samples)
                 if self.joint_info_cls is None:
                     self.joint_info_cls = namedtuple(
-                        'joint_info_cls',
-                        gail_info._fields + opt_info._fields)
+                        'joint_info_cls', gail_info._fields + opt_info._fields)
                 opt_info = self.joint_info_cls(**gail_info._asdict(),
-                                                **opt_info._asdict())
+                                               **opt_info._asdict())
 
                 self.store_diagnostics(itr, traj_infos, opt_info)
                 if (itr + 1) % self.log_interval_itrs == 0:

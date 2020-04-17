@@ -13,19 +13,7 @@ import torch
 from torch.utils import data
 
 from mtil.algos.mtgail.sample_mux import EnvIDObsArray
-
-
-def _tree_map(f, *structures):
-    s0 = structures[0]
-    if hasattr(s0, '_fields'):
-        # namedtuple, NamedTuple, namedarraytuple etc.
-        return s0._make(_tree_map(f, *zs) for zs in zip(*structures))
-    elif isinstance(s0, (list, tuple)):
-        return type(s0)(_tree_map(f, *zs) for zs in zip(*structures))
-    elif isinstance(s0, (dict, collections.OrderedDict)):
-        return type(s0)(
-            (k, _tree_map(f, *(s[k] for s in structures))) for k in s0.keys())
-    return f(*structures)
+from mtil.common import tree_map
 
 
 # FIXME: is it even worth dealing with dicts? Instead should I just make
@@ -37,7 +25,7 @@ class DictTensorDataset(data.Dataset):
 
         # make sure batch size is uniform
         batch_sizes = set()
-        _tree_map(lambda t: batch_sizes.add(t.size(0)), tensor_dict)
+        tree_map(lambda t: batch_sizes.add(t.size(0)), tensor_dict)
         assert len(batch_sizes) == 1, batch_sizes
 
         self.tensor_dict = tensor_dict
@@ -62,8 +50,8 @@ def make_tensor_dict_dataset(demo_trajs_by_env, omit_noop=False):
         n_samples = 0
         for traj in demo_trajs:
             all_obs.append(
-                _tree_map(lambda t: torch.as_tensor(t, device=cpu_dev),
-                          traj.obs))
+                tree_map(lambda t: torch.as_tensor(t, device=cpu_dev),
+                         traj.obs))
             all_acts.append(torch.as_tensor(traj.acts, device=cpu_dev))
             n_samples += len(traj.acts)
 
@@ -71,14 +59,14 @@ def make_tensor_dict_dataset(demo_trajs_by_env, omit_noop=False):
         assert n_samples > 0, demo_trajs
 
     # join together trajectories into Torch dataset
-    all_obs = _tree_map(lambda *t: torch.cat(t), *all_obs)
+    all_obs = tree_map(lambda *t: torch.cat(t), *all_obs)
     all_acts = torch.cat(all_acts)
 
     if omit_noop:
         # omit action 0 (helps avoid the "agent does nothing initially" problem
         # for MILBench)
         valid_inds = torch.squeeze(torch.nonzero(all_acts), 1)
-        all_obs = _tree_map(lambda t: t[valid_inds], all_obs)
+        all_obs = tree_map(lambda t: t[valid_inds], all_obs)
         all_acts = all_acts[valid_inds]
 
     dataset = DictTensorDataset({
@@ -189,8 +177,8 @@ def add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc):
 
 def insert_task_ids(obs_seq, task_id, variant_id):
     nobs = len(obs_seq.obs)
-    task_id_array = np.full((nobs, ), task_id, dtype='int32')
-    variant_id_array = np.full((nobs, ), variant_id, dtype='int32')
+    task_id_array = np.full((nobs, ), task_id, dtype='int64')
+    variant_id_array = np.full((nobs, ), variant_id, dtype='int64')
     eio_arr = EnvIDObsArray(observation=obs_seq.obs,
                             task_id=task_id_array,
                             variant_id=variant_id_array)

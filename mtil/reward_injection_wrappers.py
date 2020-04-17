@@ -27,46 +27,54 @@ from rlpyt.algos.pg.ppo import PPO
 from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 
-from mtil.common import RunningMeanVariance
+from mtil.common import RunningMeanVariance, tree_map
 
 # ################# #
 # For PG algorithms #
 # ################# #
 
 
-class RewardEvaluator:
-    """Batching reward evaluator which can optionally standardise reward
-    values."""
+class RewardEvaluatorMT:
+    """Batching, multi-task reward evaluator which can optionally standardise
+    reward values."""
     def __init__(self,
+                 task_ids_and_names,
                  reward_model,
                  obs_dims,
                  batch_size=256,
                  target_std=0.1,
                  normalise=False):
+        self.task_ids_and_names = task_ids_and_names
         self.batch_size = batch_size
         self.target_std = target_std
         self.normalise = normalise
         self.obs_dims = obs_dims
         if normalise:
-            self.rew_running_average = RunningMeanVariance(())
+            # TODO: replace self.rew_running_average with
+            # self.rew_running_averages (appropriately indexed)
+            num_tasks = 1 + max(
+                task_id for env_name, task_id in self.task_ids_and_names)
+            self.rew_running_averages = [
+                RunningMeanVariance(()) for _ in range(num_tasks)
+            ]
         self.dev = next(iter(reward_model.parameters())).device
         self.reward_model = reward_model
 
     def evaluate(self, obs_tuple, act_tensor, update_stats=True):
+        # TODO: use task_ids somehow
         # put model into eval mode if necessary
         old_training = self.reward_model.training
         if old_training:
             self.reward_model.eval()
 
-        obs_tensor = obs_tuple.observation
-        # TODO: actually use env ID
-        # env_ids = obs_tuple.env_id
-
         with torch.no_grad():
             # flatten observations & actions
-            old_dev = obs_tensor.device
-            lead_dim, T, B, _ = infer_leading_dims(obs_tensor, self.obs_dims)
-            obs_flat = obs_tensor.view((T * B, ) + obs_tensor.shape[lead_dim:])
+            obs_image = obs_tuple.observation
+            old_dev = obs_image.device
+            lead_dim, T, B, _ = infer_leading_dims(obs_image, self.obs_dims)
+            # use tree_map so we are able to handle the namedtuple directly
+            obs_flat = tree_map(
+                lambda t: t.view((T * B, ) + t.shape[lead_dim:]), obs_tuple)
             act_flat = act_tensor.view((T * B, ) + act_tensor.shape[lead_dim:])
 
             # now evaluate one batch at a time
@@ -74,7 +82,7 @@ class RewardEvaluator:
             for b_start in range(0, T * B, self.batch_size):
                 obs_batch = obs_flat[b_start:b_start + self.batch_size]
                 act_batch = act_flat[b_start:b_start + self.batch_size]
-                dev_obs = obs_batch.to(self.dev)
+                dev_obs = tree_map(lambda t: t.to(self.dev), obs_batch)
                 dev_acts = act_batch.to(self.dev)
                 # FIXME: make the reward model take in an env ID
                 dev_reward = self.reward_model(dev_obs, dev_acts)
@@ -83,6 +91,8 @@ class RewardEvaluator:
             # join together the batch results
             new_reward_flat = torch.cat(reward_tensors, 0)
             new_reward = restore_leading_dims(new_reward_flat, lead_dim, T, B)
+            task_ids = obs_tuple.task_id
+            assert new_reward.shape == task_ids.shape
 
         # put back into training mode if necessary
         if old_training:
@@ -90,12 +100,29 @@ class RewardEvaluator:
 
         # normalise if necessary
         if self.normalise:
-            if update_stats:
-                self.rew_running_average.update(new_reward.flatten())
-            mu = self.rew_running_average.mean.item()
-            std = self.rew_running_average.std.item()
-            denom = max(std / self.target_std, 1e-3)
-            new_reward = (new_reward - mu) / denom
+            mus = []
+            stds = []
+            for task_id, averager in enumerate(self.rew_running_averages):
+                if update_stats:
+                    id_sub = task_ids.view((-1, )) == task_id
+                    if not torch.any(id_sub):
+                        continue
+                    rew_sub = new_reward.view((-1, ))[id_sub]
+                    averager.update(rew_sub)
+
+                mus.append(averager.mean.item())
+                stds.append(averager.std.item())
+
+            mus = new_reward.new_tensor(mus)
+            stds = new_reward.new_tensor(stds)
+            denom = torch.max(stds.new_tensor(1e-3), stds / self.target_std)
+
+            denom_sub = denom[task_ids]
+            mu_sub = mus[task_ids]
+
+            # only bother applying result if we've actually seen an update
+            # before (otherwise reward will be insane)
+            new_reward = (new_reward - mu_sub) / denom_sub
 
         return new_reward
 
