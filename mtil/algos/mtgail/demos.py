@@ -49,8 +49,11 @@ def make_tensor_dict_dataset(demo_trajs_by_env, omit_noop=False):
         demo_trajs = demo_trajs_by_env[env_name]
         n_samples = 0
         for traj in demo_trajs:
+            # The observation trajectories are one elem longer than the act
+            # trajectories because they include terminal obs. We lop that off
+            # here.
             all_obs.append(
-                tree_map(lambda t: torch.as_tensor(t, device=cpu_dev),
+                tree_map(lambda t: torch.as_tensor(t, device=cpu_dev)[:-1],
                          traj.obs))
             all_acts.append(torch.as_tensor(traj.acts, device=cpu_dev))
             n_samples += len(traj.acts)

@@ -258,8 +258,8 @@ class GAILOptimiser:
                 self.batch_size // 2)
             pol_replay_samples = torchify_buffer(pol_replay_samples)
             novice_obs = pol_replay_samples.all_observation
-            all_obs = tree_map(lambda *args: torch.cat(args, 0), expert_obs,
-                               novice_obs)
+            all_obs = tree_map(lambda *args: torch.cat(args, 0).to(self.dev),
+                               expert_obs, novice_obs)
             if self.aug_model is not None:
                 # augmentations
                 all_obs = all_obs._replace(
