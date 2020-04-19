@@ -31,7 +31,7 @@ def get_demo_paths():
 
 
 def get_stats():
-    pattern = os.path.join(os.getcwd(), 'scratch/run_gail*/progress.csv')
+    pattern = os.path.join(os.getcwd(), 'scratch/run_*/progress.csv')
     prog_paths = glob.glob(pattern)
     assert len(prog_paths) == 1, (len(prog_paths), pattern)
     prog_path, = prog_paths
