@@ -17,10 +17,6 @@ from skopt.space import space as opt_space
 
 DEMO_PATTERN \
     = '~/repos/milbench/demos-simplified/match-regions-2020-03-01/*.pkl.gz'
-FIXED_ARGS = [
-    '--disc-lr', str(1e-4), '--disc-use-act', '--disc-all-frames',
-    '--disc-replay-mult', str(4), '--no-ppo-norm-adv',
-]
 
 
 def get_demo_paths():
@@ -66,7 +62,6 @@ def run_gail(gpu_idx, **cfg_kwargs):
         *'xvfb-run -a python -m mtil.algos.mtgail'.split(),
         *f'--gpu-idx {gpu_idx} --snapshot-gap 1000'.split(),
         *f'--total-n-steps {int(1e6)}'.split(),
-        *FIXED_ARGS,
         *auto_args,
         *get_demo_paths(),
     ]
