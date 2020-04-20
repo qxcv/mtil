@@ -23,4 +23,6 @@ setup(
         'setproctitle>=1.1.10',
         'psutil>=5.6.5',
         'scikit-optimize>=0.7.4,<0.8.0',
+        # for final experiments
+        'PyYAML>=5.1.2',
     ])

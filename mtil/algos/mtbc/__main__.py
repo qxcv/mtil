@@ -40,7 +40,7 @@ def cli():
 @click.option("--gpu-idx", default=None, help="index of GPU to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
-@click.option("--epochs", default=100, help="epochs of training to perform")
+@click.option("--epochs", default=50, help="epochs of training to perform")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
 @click.option("--eval-n-traj",
               default=10,
@@ -71,11 +71,12 @@ def cli():
                   "recol",
                   "trans",
                   "rot",
-                  "transrot",
                   "noise",
+                  "transrot",
+                  "trn",
                   "all",
               ]),
-              default="none",
+              default="trn",
               help="augmentations to use")
 # set this to some big value if training on perceptron or something
 @click.option(
@@ -201,6 +202,8 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         aug_opts.append('rotate')
     elif aug_mode == 'transrot':
         aug_opts.extend(['translate', 'rotate'])
+    elif aug_mode == 'trn':
+        aug_opts.extend(['translate', 'rotate', 'noise'])
     elif aug_mode == 'noise':
         aug_opts.append('noise')
     elif aug_mode != 'none':

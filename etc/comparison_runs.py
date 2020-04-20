@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+"""Main script for doing experiments that compare different methods."""
 import datetime
 import glob
 import itertools
 import os
+import stat
 import subprocess
+
+import click
+import yaml
 
 DEMO_PATH_PATTERNS = {
     'move-to-corner': '~/repos/milbench/demos-simplified/move-to-corner-2020-03-*/demo-MoveToCorner-Demo-v0-2020-03-*T*.pkl.gz',  # noqa: E501
@@ -18,11 +23,7 @@ ENV_NAMES = {
     'cluster-type': 'ClusterType-Demo-LoResStack-v0',
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-# IDK why I thought this was a better idea than "python -m mtil.algos.mtbc"
-MAIN_FILE = os.path.abspath(
-    os.path.join(THIS_DIR, '../mtil/algos/mtbc/__main__.py'))
 NUM_GPUS = 4
-EPOCHS = 30
 
 
 def expand_patterns(*patterns):
@@ -38,36 +39,56 @@ def expand_patterns(*patterns):
     return result
 
 
-def gen_command(expts, run_name, n_epochs, gpu_idx=0):
-    # demo_paths = expand_patterns(*[DEMO_PATH_PATTERNS[expt] for expt in expts])
-    demo_paths = [DEMO_PATH_PATTERNS[expt] for expt in expts]
+# Signature for algorithms:
+# - Takes in a list of demo paths, a run name, a seed, and a bunch of kwargs
+#   specific to that algorithm.
+# - Returns a list of command parts for `subprocess` (or `shlex` or whatever),
+#   and a path to a scratch dir that should contain a file matching the
+#   "itr_LATEST.pkl" used by mtbc.py.
+
+
+def gen_command_gail(demo_paths, run_name, seed, n_steps=None):
     cmd_parts = [
-        'xvfb-run',
-        '-a',
-        'python',
-        MAIN_FILE,
-        'train',
-        '--run-name',
-        run_name,
-        '--epochs',
-        str(n_epochs),
-        '--eval-n-traj',
-        '10',
-        '--passes-per-eval',
-        '20',
-        # snapshot gap of 1 is going to generate a lot of noise!
-        '--snapshot-gap',
-        '1',
-        *demo_paths,
-        # put it at the end so it's easy to change
-        '--gpu-idx',
-        str(gpu_idx),
+        *("xvfb-run -a python -m mtil.algos.mtgail").split(),
+        "--run-name",
+        str(run_name),
+        "--seed",
+        str(seed),
     ]
-    return cmd_parts
+    if n_steps is not None:
+        assert n_steps == int(n_steps), n_steps
+        cmd_parts.extend(['--total-n-steps', str(int(n_steps))])
+    cmd_parts.extend(demo_paths)
+    out_dir = f"./scratch/run_mtgail-{run_name}/"
+    return cmd_parts, out_dir
 
 
-def make_eval_cmd(run_name, env_shorthand, env_name, itr, gpu_idx):
-    run_dir = f'./scratch/run_{run_name}'
+def gen_command_bc(demo_paths, run_name, seed):
+    cmd_parts = [
+        "xvfb-run",
+        "-a",
+        "python",
+        "-m",
+        "mtil.algos.mtbc",
+        "train",
+        "--run-name",
+        run_name,
+        "--eval-n-traj",
+        "10",
+        "--passes-per-eval",
+        "20",
+        # snapshot gap of 1 is going to generate a lot of noise!
+        "--snapshot-gap",
+        "1",
+        "--seed",
+        str(seed),
+    ]
+    cmd_parts.extend(demo_paths)
+    out_dir = f'./scratch/run_{run_name}'
+    return cmd_parts, out_dir
+
+
+def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name):
     new_cmd = [
         "xvfb-run",
         "-a",
@@ -77,109 +98,150 @@ def make_eval_cmd(run_name, env_shorthand, env_name, itr, gpu_idx):
         "testall",
         "--env-name",
         env_name,
-        f"{run_dir}/itr_{itr}.pkl",
+        os.path.join(snap_dir, 'itr_LATEST.pkl'),
         "--run-id",
-        f"{run_name}-on-{env_shorthand}-after-{itr+1}-epochs",
+        f"{run_name}-on-{env_shorthand}",
         "--write-latex",
-        f"{run_dir}/eval-{env_shorthand}-{itr}.tex",
+        f"{snap_dir}/eval-{env_shorthand}.tex",
         "--write-csv",
-        f"{run_dir}/eval-{env_shorthand}-{itr}.csv",
+        f"{snap_dir}/eval-{env_shorthand}.csv",
         "--n-rollouts",
-        "30",
-        "--gpu-idx",
-        str(gpu_idx),
+        "100",
     ]
     return new_cmd
 
 
-def gen_all_expts():
-    # these will all have GPU 0, so I need to change things once I have the
-    # shell script. (another reminder: there are 20 passes through the dataset
-    # for each 'eval')
-    name_opt_combos = [
-        ('sweep-default', []),
-        ('sweep-dropout', ['--net-dropout', '0.3']),
-        ('sweep-coordconv', ['--net-coord-conv']),
-        ('sweep-aug-trans-rot', ['--aug-mode', 'transrot']),
-    ]
-    gpu_itr = itertools.cycle(range(NUM_GPUS))
-    date = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M')
+def parse_expts_file(file_path):
+    # parse experiment spec file, validating except the method-specific
+    # arguments
+    with open(file_path, 'r') as fp:
+        data = yaml.safe_load(fp)
+    assert isinstance(data, dict)
+    run_specs = []
+    for run_name, run_dict in data.items():
+        assert isinstance(run_dict, dict)
+        algo = run_dict.pop('algo')
+        generator = globals()['gen_command_' + algo]
 
-    mt_run_names = []
-    st_run_names = []
-    mt_cmds = []
-    st_cmds = []
-    for opt_name, extra_opts in name_opt_combos:
-        # multi-task training (x 1)
-        mt_run_name = f"multi-task-bc-{opt_name}-{date}"
-        mt_run_names.append(mt_run_name)
-        mt_cmd = gen_command(sorted(DEMO_PATH_PATTERNS.keys()),
-                             mt_run_name,
-                             EPOCHS,
-                             gpu_idx=next(gpu_itr)) + extra_opts
-        mt_cmds.append(mt_cmd)
+        is_multi_task = run_dict.pop('multi', False)
+        assert isinstance(is_multi_task, bool)
 
-    for task in DEMO_PATH_PATTERNS.keys():
-        # single-task training (x num_envs)
-        for opt_name, extra_opts in name_opt_combos:
-            new_st_run_name = (task,
-                               f"single-task-bc-{task}-{opt_name}-{date}")
-            st_run_names.append(new_st_run_name)
-            new_st_cmd = gen_command(
-                [task], new_st_run_name[1], EPOCHS, gpu_idx=next(gpu_itr)) \
-                + extra_opts
-            st_cmds.append(new_st_cmd)
+        # these go straight through to the algorithm and will be validated
+        # later
+        args = run_dict.pop('args', {})
+        assert isinstance(args, dict)
 
-    train_cmds = [*mt_cmds, *st_cmds]
+        if len(run_dict) > 0:
+            raise ValueError(
+                f"unrecognised options in expt spec '{run_name}': "
+                f"{sorted(run_dict.keys())}")
 
-    # test CMDs will write problem data to a problem-specific dataframe, then
-    # combine the frames into a plot later on
-    target_itrs = [EPOCHS - 1]
+        run_specs.append({
+            'run_name': run_name,
+            'algo': algo,
+            'generator': generator,
+            'is_multi_task': is_multi_task,
+            'args': args,
+        })
+
+    return run_specs
+
+
+def generate_cmds(*, run_name, algo, generator, is_multi_task, args, suffix):
+    train_cmds = []
     eval_cmds = []
-    # single-task eval runs (one per env)
-    # TODO: add GPUs to these eval runs
-    for itr in target_itrs:
-        for env_shorthand, run_name in st_run_names:
-            env_name = ENV_NAMES[env_shorthand]
-            new_cmd = make_eval_cmd(run_name,
-                                    env_shorthand,
-                                    env_name,
-                                    itr=itr,
-                                    gpu_idx=next(gpu_itr))
-            eval_cmds.append(new_cmd)
-    # multi-task eval runs (one eval run per env, even though there was only
-    # one multi-task training run shared across all envs)
-    for itr in target_itrs:
-        for env_shorthand, env_name in ENV_NAMES.items():
-            for mt_run_name in mt_run_names:
-                new_cmd = make_eval_cmd(mt_run_name,
-                                        env_shorthand,
-                                        env_name,
-                                        itr=itr,
-                                        gpu_idx=next(gpu_itr))
-                eval_cmds.append(new_cmd)
 
-    return [*train_cmds, *eval_cmds]
+    seed = 42  # TODO: allow for iteration over seed
+
+    if is_multi_task:
+        # one train command, N test commands
+        mt_run_name = f"{run_name}-{suffix}"
+        demo_paths = [
+            DEMO_PATH_PATTERNS[expt]
+            for expt in sorted(DEMO_PATH_PATTERNS.keys())
+        ]
+
+        mt_cmd, mt_dir = generator(demo_paths=demo_paths,
+                                   run_name=mt_run_name,
+                                   seed=seed,
+                                   **args)
+        train_cmds.append(mt_cmd)
+
+        for task_shorthand, env_name in sorted(ENV_NAMES.items()):
+            mt_eval_cmd = make_eval_cmd(run_name, mt_dir, task_shorthand,
+                                        env_name)
+            eval_cmds.append(mt_eval_cmd)
+
+    else:
+        # one test command, N train commands
+        for task in sorted(DEMO_PATH_PATTERNS.keys()):
+            st_run_name = f"{run_name}-{task}-{suffix}"
+            demo_paths = [DEMO_PATH_PATTERNS[task]]
+
+            st_cmd, st_dir = generator(demo_paths=demo_paths,
+                                       run_name=st_run_name,
+                                       seed=seed,
+                                       **args)
+            train_cmds.append(st_cmd)
+
+            st_eval_cmd = make_eval_cmd(run_name, st_dir, task,
+                                        ENV_NAMES[task])
+            eval_cmds.append(st_eval_cmd)
+
+    return train_cmds, eval_cmds
 
 
-# Runs I want to do:
-#  - One multi-task with 1/10/100 rounds of opt. (one run, three checkpoints)
-#  - Four single-tasks (one per env) with 1/10/100 rounds of opt. (four runs,
-#    twelve checkpoints).
-# Will start ~5 relevant training runs now & then sort out eval later.
+def chmod_plusx(file_path):
+    """Make file at existing path world-executable."""
+    file_mode = os.stat(file_path).st_mode
+    file_mode |= stat.S_IXUSR | stat.S_IXOTH | stat.S_IXGRP
+    os.chmod(file_path, file_mode)
 
 
-def main():
-    expt_cmd_parts = gen_all_expts()
-    expt_commands = [
-        subprocess.list2cmdline(parts) for parts in expt_cmd_parts
-    ]
-    print("Writing commands to commands.sh")
-    with open("commands.sh", "w") as fp:
+@click.command()
+@click.option("--dest", default="commands.sh", help="file to write to")
+@click.option("--suffix",
+              default=None,
+              help="extra suffix to add to runs (defaults to timestamp)")
+@click.argument("spec")
+def main(spec, dest, suffix):
+    """Generate shell script of commands from an input YAML spec"""
+    if suffix is None:
+        # add 'T%H:%M' for hours and minutes
+        suffix = datetime.datetime.now().strftime('%Y-%m-%d')
+
+    expts_specs = parse_expts_file(spec)
+
+    all_train = []
+    all_test = []
+    for expt_spec in expts_specs:
+        train_cmds, test_cmds = generate_cmds(**expt_spec, suffix=suffix)
+        all_train.extend(train_cmds)
+        all_test.extend(test_cmds)
+
+    print(f"Writing commands to '{dest}'")
+    out_dir = os.path.dirname(dest)
+    if out_dir:
+        # create dir if needed
+        os.makedirs(out_dir, exist_ok=True)
+    with open(dest, "w") as fp:
         print("#!/usr/bin/env bash\n", file=fp)
-        for line in expt_commands:
-            print(line + ' &', file=fp)
-            print('\n', file=fp)
+
+        # write the commands & the GPU indices at the same time
+        gpu_itr = itertools.cycle(range(NUM_GPUS))
+        for cmd in all_train:
+            cmd = [*cmd, "--gpu-idx", str(next(gpu_itr))]
+            print(subprocess.list2cmdline(cmd) + " &\n", file=fp)
+
+        # assume that test cmds start *after* all train CMDs have finished, so
+        # it's fine to reset counter
+        gpu_itr = itertools.cycle(range(NUM_GPUS))
+        for cmd in all_test:
+            cmd = [*cmd, "--gpu-idx", str(next(gpu_itr))]
+            print(subprocess.list2cmdline(cmd) + " &\n", file=fp)
+
+    # change file mode to make executable
+    chmod_plusx(dest)
 
 
 if __name__ == '__main__':

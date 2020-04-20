@@ -1,0 +1,20 @@
+st-gail-default:
+    algo: gail
+    # if multi=False then we automatically generate one experiment for every
+    # env; otherwise we have a single experiment that involves training on all
+    # envs
+    multi: false
+    args:
+      n_steps: null
+
+mt-gail-default:
+    algo: gail
+    multi: true
+
+st-bc-default:
+    algo: bc
+    multi: false
+
+mt-bc-default:
+    algo: bc
+    multi: true
