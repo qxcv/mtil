@@ -191,7 +191,6 @@ def main(
                                                    transfer_variants,
                                                    mb_preproc=add_preproc,
                                                    omit_noop=omit_noop)
-    # (env_name, env_id), = env_ids_and_names
     if danger_override_env_name:
         raise NotImplementedError(
             "haven't re-implemeneted env name override for multi-task GAIL")
@@ -237,10 +236,12 @@ def main(
     in_chans = obs_space.shape[-1]
     n_actions = act_space.n  # categorical action space
     task_ids_and_demo_env_names = [
-        (env_name[0], task_id)
-        for env_name, (task_id,
-                       _) in variant_groups.task_variant_by_name.items()
-    ]
+        (env_name, task_id) for env_name, (task_id, variant_id)
+        in variant_groups.task_variant_by_name.items()
+        # variant ID 0 is (usually) the demo env
+        # TODO: make sure this is ACTUALLY the demo env
+        if variant_id == 0
+    ]  # yapf: disable
     model_ctor = MultiHeadPolicyNet
     model_kwargs = dict(in_chans=in_chans,
                         n_actions=n_actions,
@@ -253,7 +254,6 @@ def main(
             model_kwargs=model_kwargs))
 
     print("Setting up discriminator/reward model")
-    # TODO: make all of these multi-task!
     discriminator_mt = MILBenchDiscriminatorMT(
         task_ids_and_names=task_ids_and_demo_env_names,
         in_chans=in_chans,
@@ -322,18 +322,19 @@ def main(
     else:
         print("Discriminator augmentations off")
         aug_model = None
-    gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
-                               # TODO: update GAILOptimiser to use multi-task
-                               # discrim
-                               discrim_model=discriminator_mt,
-                               buffer_num_samples=max(
-                                   disc_batch_size, disc_replay_mult *
-                                   sampler_batch_T * sampler_batch_B),
-                               batch_size=disc_batch_size,
-                               updates_per_itr=disc_up_per_iter,
-                               dev=dev,
-                               aug_model=aug_model,
-                               lr=disc_lr)
+    gail_optim = GAILOptimiser(
+        dataset_mt=dataset_mt,
+        # TODO: update GAILOptimiser to use multi-task
+        # discrim
+        discrim_model=discriminator_mt,
+        buffer_num_samples=max(
+            disc_batch_size,
+            disc_replay_mult * sampler_batch_T * sampler_batch_B),
+        batch_size=disc_batch_size,
+        updates_per_itr=disc_up_per_iter,
+        dev=dev,
+        aug_model=aug_model,
+        lr=disc_lr)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards
