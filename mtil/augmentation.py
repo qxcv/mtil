@@ -119,7 +119,7 @@ class MILBenchAugmentations(KorniaAugmentations):
             transforms.append(
                 aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),
                                  translate=(0.05, 0.05) if translate else None,
-                                 border_mode='border'))
+                                 padding_mode='border'))
         if noise:
             # Remember that values lie in [0,1], so std=0.01 (for example)
             # means there's a >99% chance that any given noise value will lie
