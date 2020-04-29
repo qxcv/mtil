@@ -9,11 +9,116 @@ from milbench.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 from milbench.benchmarks import EnvName
 import numpy as np
+from rlpyt.agents.pg.categorical import CategoricalPgAgent
 import torch
 from torch.utils import data
 
-from mtil.algos.mtgail.sample_mux import EnvIDObsArray
-from mtil.common import tree_map
+# TODO: factor load_state_dict_or_model from mtbc out into common
+from mtil.algos.mtgail.sample_mux import (EnvIDObsArray,
+                                          MILBenchEnvMultiplexer,
+                                          MuxCpuSampler, MuxGpuSampler,
+                                          MuxTaskModelWrapper)
+from mtil.common import (MILBenchTrajInfo, MultiHeadPolicyNet, get_env_metas,
+                         tree_map)
+
+# vvvvvvvvvvv STUFF TO FACTOR OUT vvvvvvvvvvvvvvv
+
+
+def get_policy_spec_milbench(env_metas):
+    """Get `MultiHeadPolicyNet`'s `in_chans` and `n_actions` kwargs
+    automatically from env metadata from a MILBench environment. Does sanity
+    check to ensure that input & output shapes are the same for all envs."""
+    obs_space = env_metas[0].observation_space
+    act_space = env_metas[0].action_space
+    assert all(em.observation_space == obs_space for em in env_metas)
+    assert all(em.action_space == act_space for em in env_metas)
+    assert len(obs_space.shape) == 3, obs_space.shape
+    in_chans = obs_space.shape[-1]
+    n_actions = act_space.n  # categorical action space
+    model_kwargs = dict(in_chans=in_chans, n_actions=n_actions)
+    return model_kwargs
+
+
+def get_demos_meta(*,
+                   demo_paths,
+                   omit_noop=False,
+                   transfer_variants=(),
+                   preproc_name=None):
+    dataset_mt, variant_groups = load_demos_mtgail(demo_paths,
+                                                   transfer_variants,
+                                                   mb_preproc=preproc_name,
+                                                   omit_noop=omit_noop)
+
+    print("Getting env metadata")
+    all_env_names = sorted(variant_groups.task_variant_by_name.keys())
+    env_metas = get_env_metas(*all_env_names)
+
+    task_ids_and_demo_env_names = [
+        (env_name, task_id) for env_name, (task_id, variant_id)
+        in variant_groups.task_variant_by_name.items()
+        # variant ID 0 is (usually) the demo env
+        # TODO: make sure this is ACTUALLY the demo env
+        if variant_id == 0
+    ]  # yapf: disable
+
+    rv = {
+        'dataset_mt': dataset_mt,
+        'variant_groups': variant_groups,
+        'env_metas': env_metas,
+        'task_ids_and_demo_env_names': task_ids_and_demo_env_names,
+    }
+    return rv
+
+
+def make_mux_sampler(*, variant_groups, env_metas, use_gpu, batch_B, batch_T):
+    print("Setting up environment multiplexer")
+    # local copy of Gym env, w/ args to create equivalent env in the sampler
+    env_mux = MILBenchEnvMultiplexer(variant_groups)
+    new_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(batch_B)
+    all_env_names = sorted(variant_groups.task_variant_by_name.keys())
+    if new_batch_B != batch_B:
+        print(f"Increasing sampler batch size from '{batch_B}' to "
+              f"'{new_batch_B}' to be divisible by number of "
+              f"environments ({len(all_env_names)})")
+        batch_B = new_batch_B
+
+    # number of transitions collected during each round of sampling will be
+    # batch_T * batch_B = n_steps * n_envs
+    max_steps = max(
+        [env_meta.spec.max_episode_steps for env_meta in env_metas])
+
+    print("Setting up sampler")
+    if use_gpu:
+        sampler_ctor = MuxGpuSampler
+    else:
+        sampler_ctor = MuxCpuSampler
+    sampler = sampler_ctor(env_mux,
+                           env_ctor_kwargs,
+                           max_decorrelation_steps=max_steps,
+                           TrajInfoCls=MILBenchTrajInfo,
+                           batch_T=batch_T,
+                           batch_B=batch_B)
+
+    return sampler, batch_B
+
+
+def make_agent_policy_mt(env_metas, task_ids_and_demo_env_names):
+    model_in_out_kwargs = get_policy_spec_milbench(env_metas)
+    model_kwargs = {
+        'env_ids_and_names': task_ids_and_demo_env_names,
+        **model_in_out_kwargs,
+    }
+    model_ctor = MultiHeadPolicyNet
+    ppo_agent = CategoricalPgAgent(
+        ModelCls=MuxTaskModelWrapper,
+        model_kwargs=dict(
+            model_ctor=model_ctor,
+            # task_id=env_id,
+            model_kwargs=model_kwargs))
+    return ppo_agent, model_ctor, model_kwargs
+
+
+# ^^^^^^^^^^^ STUFF TO FACTOR OUT ^^^^^^^^^^^^^^^
 
 
 # FIXME: is it even worth dealing with dicts? Instead should I just make
@@ -34,7 +139,15 @@ class DictTensorDataset(data.Dataset):
         return {key: tensor[index] for key, tensor in self.tensor_dict.items()}
 
     def __len__(self):
-        return next(iter(self.tensor_dict.values())).size(0)
+        first_val = next(iter(self.tensor_dict.values()))
+        if isinstance(first_val, torch.Tensor):
+            return first_val.size(0)
+        elif isinstance(first_val, tuple):
+            sizes = set()
+            tree_map(lambda t: sizes.add(t.size(0)), first_val)
+            assert len(sizes) == 1, sizes
+            return next(iter(sizes))
+        raise TypeError(f"can't handle value of type '{type(first_val)}'")
 
 
 def make_tensor_dict_dataset(demo_trajs_by_env, omit_noop=False):
@@ -189,7 +302,7 @@ def insert_task_ids(obs_seq, task_id, variant_id):
 
 
 def load_demos_mtgail(demo_paths,
-                      variant_names,
+                      variant_names=(),
                       mb_preproc=None,
                       omit_noop=False):
     # load demo pickles from disk and sort into dict

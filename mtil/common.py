@@ -626,8 +626,8 @@ def make_loader_mt(dataset, batch_size):
     return loader
 
 
-# TODO: unify this, make_loader_mt, and trajectories_to_dataset_mt into one big
-# class.
+# TODO: replace all this code with GAIL data loader, then move the GAIL data
+# loader into this file.
 def load_demos_mt(demo_paths, add_preproc=None, omit_noop=False):
     """Load multi-task demonstrations. Can apply any desired MILBench
     preprocessor as needed."""

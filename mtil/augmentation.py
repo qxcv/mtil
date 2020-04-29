@@ -1,4 +1,6 @@
 """Utilities for on-device image augmentation with Kornia."""
+import collections
+
 import kornia.augmentation as aug
 import torch
 from torch import nn
@@ -102,6 +104,17 @@ class GaussianNoise(nn.Module):
 class MILBenchAugmentations(KorniaAugmentations):
     """Convenience class for data augmentation. Has a standard set of possible
     augmentations with sensible pre-set values."""
+    PRESETS = collections.OrderedDict([
+        ('all', ['colour_jitter', 'translate', 'rotate', 'noise']),
+        ('recol', ['colour_jitter']),
+        ('trans', ['translate']),
+        ('rot', ['rotate']),
+        ('transrot', ['translate', 'rotate']),
+        ('trn', ['translate', 'rotate', 'noise']),
+        ('noise', ['noise']),
+        ('none', []),
+    ])
+
     def __init__(self,
                  colour_jitter=False,
                  translate=False,

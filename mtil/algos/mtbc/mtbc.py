@@ -6,12 +6,13 @@ import collections
 import os
 import re
 
+from milbench.benchmarks import EnvName
 import numpy as np
 from rlpyt.utils.prog_bar import ProgBarCounter
 import torch
 import torch.nn.functional as F
 
-from mtil.common import FixedTaskModelWrapper
+from mtil.common import FixedTaskModelWrapper, tree_map
 
 LATEST_MARKER = 'LATEST'
 
@@ -50,26 +51,27 @@ def get_latest_path(path_template):
     return os.path.join(dir_name, best_fn)
 
 
-def copy_model_into_sampler(model, sampler, prefix='model'):
+def copy_model_into_agent_eval(model, agent, prefix='model'):
     """Update the `.agent` inside `sampler` so that it contains weights from
     `model`. Should call this before doing evaluation rollouts between epochs
     of training."""
     state_dict = model.state_dict()
-    assert hasattr(sampler.agent, prefix)
+    assert hasattr(agent, prefix)
     updated_state_dict = {
         prefix + '.' + key: value
         for key, value in state_dict.items()
     }
-    sampler.agent.load_state_dict(updated_state_dict)
-    # make sure sampler is in eval mode no matter what
-    sampler.agent.model.eval()
+    agent.load_state_dict(updated_state_dict)
+    # make sure agent is in eval mode no matter what
+    agent.model.eval()
 
 
 def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model):
     # @torch.jit.script
-    def do_loss_forward_back(task_ids_batch, obs_batch, acts_batch):
+    def do_loss_forward_back(obs_batch, acts_batch):
         # we don't use the value output
-        logits_flat, _ = model(obs_batch, task_ids_batch)
+        logits_flat, _ = model(obs_batch.observation,
+                               task_ids=obs_batch.task_id)
         losses = F.cross_entropy(logits_flat,
                                  acts_batch.long(),
                                  reduction='none')
@@ -86,21 +88,23 @@ def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model):
     per_task_losses = collections.defaultdict(lambda: [])
     progress = ProgBarCounter(len(loader) * passes_per_eval)
     for pass_num in range(passes_per_eval):
-        for batches_done, (task_ids_batch, obs_batch, acts_batch) \
-                in enumerate(loader, start=1):
+        for batches_done, loader_batch in enumerate(loader, start=1):
+            # (task_ids_batch, obs_batch, acts_batch)
             # copy to GPU
-            obs_batch = obs_batch.to(dev)
+            obs_batch = loader_batch['obs']
+            acts_batch = loader_batch['acts']
+            # reminder: attributes are .observation, .task_id, .variant_id
+            obs_batch = tree_map(lambda t: t.to(dev), obs_batch)
             acts_batch = acts_batch.to(dev)
-            task_ids_batch = task_ids_batch.to(dev)
 
             if aug_model is not None:
                 # apply augmentations
-                obs_batch = aug_model(obs_batch)
+                obs_batch = obs_batch._replace(
+                    observation=aug_model(obs_batch.observation))
 
             # compute loss & take opt step
             opt.zero_grad()
-            batch_losses = do_loss_forward_back(task_ids_batch, obs_batch,
-                                                acts_batch)
+            batch_losses = do_loss_forward_back(obs_batch, acts_batch)
             opt.step()
 
             # for logging
@@ -111,11 +115,18 @@ def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model):
             losses.append(f_loss)
 
             # also track separately for each task
-            np_task_ids = task_ids_batch.cpu().numpy()
-            for task_id in np.unique(np_task_ids):
-                rel_losses = batch_losses[np_task_ids == task_id]
+            tv_ids = torch.stack((obs_batch.task_id, obs_batch.variant_id),
+                                 axis=1)
+            np_tv_ids = tv_ids.cpu().numpy()
+            assert len(np_tv_ids.shape) == 2 and np_tv_ids.shape[1] == 2, \
+                np_tv_ids.shape
+            for tv_id in np.unique(np_tv_ids, axis=0):
+                tv_mask = np.all(np_tv_ids == tv_id[None], axis=-1)
+                rel_losses = batch_losses[tv_mask]
                 if len(rel_losses) > 0:
-                    per_task_losses[task_id].append(np.mean(rel_losses))
+                    task_id, variant_id = tv_id
+                    per_task_losses[(task_id, variant_id)] \
+                        .append(np.mean(rel_losses))
 
     progress.stop()
 
@@ -135,6 +146,12 @@ def make_env_tag(env_name):
     alnum_parts = _alnum_re.findall(no_version)
     final_name = ''.join(part[0].upper() + part[1:] for part in alnum_parts)
     return final_name
+
+
+def strip_mb_preproc_name(env_name):
+    """Strip any preprocessor name from a MILBench env name."""
+    en = EnvName(env_name)
+    return '-'.join((en.name_prefix, en.demo_test_spec, en.version_suffix))
 
 
 def load_state_dict_or_model(state_dict_or_model_path):
@@ -185,17 +202,26 @@ def wrap_model_for_fixed_task(model, env_name):
     return ft_wrapper
 
 
-def eval_model(sampler, itr, n_traj=10):
-    scores = []
-    while len(scores) < n_traj:
-        # can't see an obvious purpose to the 'itr' argument, so setting it to
-        # None
-        samples_pyt, _ = sampler.obtain_samples(itr)
+def eval_model(sampler_mt, itr, n_traj=10):
+    # BUG: this doesn't reset the sampler envs & agent (because I don't know
+    # how), so it yields somewhat inaccurate results when called repeatedly on
+    # envs with different horizons.
+    scores_by_task_var = collections.defaultdict(lambda: [])
+    while (not scores_by_task_var
+           or min(map(len, scores_by_task_var.values())) < n_traj):
+        samples_pyt, _ = sampler_mt.obtain_samples(itr)
         eval_scores = samples_pyt.env.env_info.eval_score
-        dones = samples_pyt.env.done
-        done_scores = eval_scores.flatten()[dones.flatten()]
-        scores.extend(done_scores)
-    return scores[:n_traj]
+        dones = samples_pyt.env.done.flatten()
+        done_scores = eval_scores.flatten()[dones]
+        done_task_ids = samples_pyt.env.observation.task_id.flatten()[dones]
+        done_var_ids = samples_pyt.env.observation.variant_id.flatten()[dones]
+        for score, task_id, var_id in zip(done_scores, done_task_ids,
+                                          done_var_ids):
+            key = (task_id.item(), var_id.item())
+            scores_by_task_var[key].append(score.item())
+    # clip any extra rollouts
+    scores_by_task_var = {k: v[:n_traj] for k, v in scores_by_task_var.items()}
+    return scores_by_task_var
 
 
 def saved_model_loader_ft(state_dict_or_model_path, env_name):

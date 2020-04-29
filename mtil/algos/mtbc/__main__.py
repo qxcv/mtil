@@ -1,6 +1,7 @@
+import contextlib
 import multiprocessing as mp
 import os
-import sys
+import readline  # noqa: F401
 import time
 
 import click
@@ -13,15 +14,17 @@ from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.utils.logging import logger
 import torch
 
-from mtil.algos.mtbc.mtbc import (copy_model_into_sampler,
+from mtil.algos.mtbc.mtbc import (copy_model_into_agent_eval,
                                   do_epoch_training_mt, eval_model,
                                   get_latest_path, load_state_dict_or_model,
                                   make_env_tag, saved_model_loader_ft,
+                                  strip_mb_preproc_name,
                                   wrap_model_for_fixed_task)
+from mtil.algos.mtgail.demos import (get_demos_meta, make_agent_policy_mt,
+                                     make_mux_sampler)
 from mtil.augmentation import MILBenchAugmentations
-from mtil.common import (FixedTaskModelWrapper, MILBenchGymEnv,
-                         MultiHeadPolicyNet, load_demos_mt, make_loader_mt,
-                         make_logger_ctx, set_seeds)
+from mtil.common import (MILBenchGymEnv, make_loader_mt, make_logger_ctx,
+                         sane_click_init, set_seeds)
 
 
 @click.group()
@@ -96,198 +99,157 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
     # loading should be simplified by having a single class that can provide
     # whatever form of data the current IL method needs, without having to do
     # unnecessary copies in memory. Maybe also just use Sacred, because YOLO.
+    with contextlib.ExitStack() as exit_stack:
+        # set up seeds & devices
+        set_seeds(seed)
+        mp.set_start_method('spawn')
+        use_gpu = gpu_idx is not None and torch.cuda.is_available()
+        dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
+        print(f"Using device {dev}, seed {seed}")
+        cpu_count = mp.cpu_count()
+        n_workers = max(1, cpu_count // 2)
+        affinity = dict(
+            cuda_idx=gpu_idx if use_gpu else None,
+            # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])
+            workers_cpus=list(range(n_workers)),
+        )
 
-    # set up seeds & devices
-    set_seeds(seed)
-    mp.set_start_method('spawn')
-    use_gpu = gpu_idx is not None and torch.cuda.is_available()
-    dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
-    print(f"Using device {dev}, seed {seed}")
-    cpu_count = mp.cpu_count()
-    n_workers = max(1, cpu_count // 2)
-    affinity = dict(
-        cuda_idx=gpu_idx if use_gpu else None,
-        # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])
-        workers_cpus=list(range(n_workers)),
-    )
+        # register original envs
+        import milbench
+        milbench.register_envs()
 
-    if use_gpu:
-        SamplerCls = GpuSampler
-    else:
-        SamplerCls = CpuSampler
+        # TODO: maybe make this a class so that I don't have to pass around a
+        # zillion attrs and use ~5 lines just to load some demos?
+        # TODO: split out part of the dataset for validation. (IDK whether to
+        # do this trajectory-wise or what)
+        # dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
+        #     = load_demos_mt(demos, add_preproc, omit_noop=omit_noop)
+        # loader_mt = make_loader_mt(dataset_mt, batch_size)
 
-    # register original envs
-    import milbench
-    milbench.register_envs()
+        demos_metas_dict = get_demos_meta(demo_paths=demos,
+                                          omit_noop=omit_noop,
+                                          transfer_variants=[],
+                                          preproc_name=add_preproc)
+        dataset_mt = demos_metas_dict['dataset_mt']
+        loader_mt = make_loader_mt(dataset_mt, batch_size)
+        variant_groups = demos_metas_dict['variant_groups']
+        env_metas = demos_metas_dict['env_metas']
+        task_ids_and_demo_env_names = demos_metas_dict[
+            'task_ids_and_demo_env_names']
+        sampler_batch_B = batch_size
+        # this doesn't really matter
+        sampler_batch_T = 5
+        # FIXME: what agent is this sampler using?
+        sampler, sampler_batch_B = make_mux_sampler(
+            variant_groups=variant_groups,
+            env_metas=env_metas,
+            use_gpu=use_gpu,
+            batch_B=sampler_batch_B,
+            batch_T=sampler_batch_T)
+        agent, policy_ctor, policy_kwargs = make_agent_policy_mt(
+            env_metas, task_ids_and_demo_env_names)
+        sampler.initialize(agent=agent,
+                           seed=np.random.randint(1 << 31),
+                           affinity=affinity)
+        exit_stack.callback(lambda: sampler.shutdown())
 
-    # TODO: maybe make this a class so that I don't have to pass around a
-    # zillion attrs and use ~5 lines just to load some demos?
-    # TODO: split out part of the dataset for validation. (IDK whether to do
-    # this trajectory-wise or what)
-    dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
-        = load_demos_mt(demos, add_preproc, omit_noop=omit_noop)
-    loader_mt = make_loader_mt(dataset_mt, batch_size)
+        model_mt = policy_ctor(**policy_kwargs).to(dev)
+        # Adam mostly works fine, but in very loose informal tests it seems
+        # like SGD had fewer weird failures where mean loss would jump up by a
+        # factor of 2x for a period (?). (I don't think that was solely due to
+        # high LR; probably an architectural issue.) opt_mt =
+        # torch.optim.Adam(model_mt.parameters(), lr=3e-4)
+        opt_mt = torch.optim.SGD(model_mt.parameters(), lr=1e-3, momentum=0.1)
 
-    dataset_len = len(loader_mt)
-    env_ids_and_names = [(name, env_name_to_id[name])
-                         for _, name in name_pairs]
+        try:
+            aug_opts = MILBenchAugmentations.PRESETS[aug_mode]
+        except KeyError:
+            raise ValueError(f"unsupported mode '{aug_mode}'")
+        if aug_opts:
+            print("Augmentations:", ", ".join(aug_opts))
+            aug_model = MILBenchAugmentations(**{k: True for k in aug_opts}) \
+                .to(dev)
+        else:
+            print("No augmentations")
+            aug_model = None
 
-    # model kwargs will be filled in when we start our first env
-    model_kwargs = None
-    model_ctor = MultiHeadPolicyNet
-    env_ctor = MILBenchGymEnv
+        n_uniq_envs = len(task_ids_and_demo_env_names)
+        log_params = {
+            'n_uniq_envs': n_uniq_envs,
+            'n_demos': len(demos),
+            'net_use_bn': net_use_bn,
+            'net_width_mul': net_width_mul,
+            'net_dropout': net_dropout,
+            'net_coord_conv': net_coord_conv,
+            'net_attention': net_attention,
+            'aug_mode': aug_mode,
+            'seed': seed,
+            'eval_n_traj': eval_n_traj,
+            'passes_per_eval': passes_per_eval,
+            'omit_noop': omit_noop,
+            'batch_size': batch_size,
+            'epochs': epochs,
+            'snapshot_gap': snapshot_gap,
+            'add_preproc': add_preproc,
+        }
+        with make_logger_ctx(out_dir,
+                             "mtbc",
+                             f"mt{n_uniq_envs}",
+                             run_name,
+                             snapshot_gap=snapshot_gap,
+                             log_params=log_params):
+            # initial save
+            torch.save(
+                model_mt,
+                os.path.join(logger.get_snapshot_dir(), 'full_model.pt'))
 
-    samplers = []
-    agents = []
-    for orig_env_name, env_name in name_pairs:
-        env_ctor_kwargs = dict(env_name=env_name)
-        env = gym.make(env_name)
-        max_steps = env.spec.max_episode_steps
+            # train for a while
+            for epoch in range(epochs):
+                dataset_len = len(dataset_mt)
+                print(
+                    f"Starting epoch {epoch+1}/{epochs} ({dataset_len} "
+                    f"batches * {passes_per_eval} passes between evaluations)")
 
-        # set model kwargs if necessary
-        if model_kwargs is None:
-            obs_shape = env.observation_space.shape
-            if len(obs_shape) == 3:
-                in_chans = obs_shape[-1]
-            else:
-                # frame stacking
-                in_chans = obs_shape[-1] * obs_shape[0]
-            n_actions = env.action_space.n
+                model_mt.train()
+                loss_ewma, losses, per_task_losses = do_epoch_training_mt(
+                    loader_mt, model_mt, opt_mt, dev, passes_per_eval,
+                    aug_model)
 
-            model_kwargs = {
-                'env_ids_and_names': env_ids_and_names,
-                'in_chans': in_chans,
-                'n_actions': n_actions,
-                'use_bn': net_use_bn,
-                'dropout': net_dropout,
-                'coord_conv': net_coord_conv,
-                'attention': net_attention,
-                'width': net_width_mul,
-            }
+                # TODO: record accuracy on a random subset of the train and
+                # validation sets (both in eval mode, not train mode)
 
-        env_sampler = SamplerCls(env_ctor,
-                                 env_ctor_kwargs,
-                                 batch_T=max_steps,
-                                 max_decorrelation_steps=max_steps,
-                                 batch_B=min(eval_n_traj, batch_size))
-        env_agent = CategoricalPgAgent(ModelCls=FixedTaskModelWrapper,
-                                       model_kwargs=dict(
-                                           model_ctor=model_ctor,
-                                           model_kwargs=model_kwargs,
-                                           task_id=env_name_to_id[env_name]))
-        env_sampler.initialize(env_agent,
-                               seed=np.random.randint(1 << 31),
-                               affinity=affinity)
-        env_agent.to_device(dev.index if use_gpu else None)
+                print(f"Evaluating {eval_n_traj} trajectories on "
+                      f"{variant_groups.num_tasks} tasks")
+                record_misc_calls = []
+                model_mt.eval()
 
-        samplers.append(env_sampler)
-        agents.append(env_agent)
+                copy_model_into_agent_eval(model_mt, sampler.agent)
+                scores_by_tv = eval_model(sampler,
+                                          itr=epoch,
+                                          n_traj=eval_n_traj)
+                for (task_id, variant_id), scores in scores_by_tv.items():
+                    tv_id = (task_id, variant_id)
+                    env_name = variant_groups.env_name_by_task_variant[tv_id]
+                    tag = make_env_tag(strip_mb_preproc_name(env_name))
+                    logger.record_tabular_misc_stat("Score%s" % tag, scores)
+                    env_losses = per_task_losses.get(tv_id, [])
+                    record_misc_calls.append((f"Loss{tag}", env_losses))
 
-    model_mt = model_ctor(**model_kwargs).to(dev)
-    # Adam mostly works fine, but in very loose informal tests it seems like
-    # SGD had fewer weird failures where mean loss would jump up by a factor of
-    # 2x for a period (?). (I don't think that was solely due to high LR;
-    # probably an architectural issue.)
-    # opt_mt = torch.optim.Adam(model_mt.parameters(), lr=3e-4)
-    opt_mt = torch.optim.SGD(model_mt.parameters(), lr=1e-3, momentum=0.1)
+                # we record score AFTER loss so that losses are all in one place,
+                # and scores are all in another
+                for args in record_misc_calls:
+                    logger.record_tabular_misc_stat(*args)
 
-    aug_opts = []
-    if aug_mode == 'all':
-        aug_opts.extend(['colour_jitter', 'translate', 'rotate', 'noise'])
-    elif aug_mode == 'recol':
-        aug_opts.append('colour_jitter')
-    elif aug_mode == 'trans':
-        aug_opts.append('translate')
-    elif aug_mode == 'rot':
-        aug_opts.append('rotate')
-    elif aug_mode == 'transrot':
-        aug_opts.extend(['translate', 'rotate'])
-    elif aug_mode == 'trn':
-        aug_opts.extend(['translate', 'rotate', 'noise'])
-    elif aug_mode == 'noise':
-        aug_opts.append('noise')
-    elif aug_mode != 'none':
-        raise ValueError(f"unsupported mode '{aug_mode}'")
-    if aug_opts:
-        print("Augmentations:", ", ".join(aug_opts))
-        aug_model = MILBenchAugmentations(**{k: True for k in aug_opts}) \
-            .to(dev)
-    else:
-        print("No augmentations")
-        aug_model = None
-
-    n_uniq_envs = len(env_ids_and_names)
-    log_params = {
-        'n_uniq_envs': n_uniq_envs,
-        'n_demos': len(demos),
-        'net_use_bn': net_use_bn,
-        'net_width_mul': net_width_mul,
-        'net_dropout': net_dropout,
-        'net_coord_conv': net_coord_conv,
-        'net_attention': net_attention,
-        'aug_mode': aug_mode,
-        'seed': seed,
-        'eval_n_traj': eval_n_traj,
-        'passes_per_eval': passes_per_eval,
-        'omit_noop': omit_noop,
-        'batch_size': batch_size,
-        'epochs': epochs,
-        'snapshot_gap': snapshot_gap,
-        'add_preproc': add_preproc,
-    }
-    with make_logger_ctx(out_dir,
-                         "mtbc",
-                         f"mt{n_uniq_envs}",
-                         run_name,
-                         snapshot_gap=snapshot_gap,
-                         log_params=log_params):
-        # initial save
-        torch.save(model_mt,
-                   os.path.join(logger.get_snapshot_dir(), 'full_model.pt'))
-
-        # train for a while
-        for epoch in range(epochs):
-            print(f"Starting epoch {epoch+1}/{epochs} ({dataset_len} batches "
-                  f"* {passes_per_eval} passes between evaluations)")
-
-            model_mt.train()
-            loss_ewma, losses, per_task_losses = do_epoch_training_mt(
-                loader_mt, model_mt, opt_mt, dev, passes_per_eval, aug_model)
-
-            # TODO: record accuracy on a random subset of the train and
-            # validation sets (both in eval mode, not train mode)
-
-            print(f"Evaluating {eval_n_traj} trajectories on "
-                  f"{len(name_pairs)} envs")
-            record_misc_calls = []
-            model_mt.eval()
-            for (orig_env_name,
-                 env_name), sampler in zip(name_pairs, samplers):
-                copy_model_into_sampler(model_mt, sampler)
-                scores = eval_model(sampler, itr=epoch, n_traj=eval_n_traj)
-                tag = make_env_tag(orig_env_name)
-                logger.record_tabular_misc_stat("Score%s" % tag, scores)
-                env_id = env_name_to_id[env_name]
-                env_losses = per_task_losses.get(env_id, [])
-                record_misc_calls.append((f"Loss{tag}", env_losses))
-            # we record score AFTER loss so that losses are all in one place,
-            # and scores are all in another
-            for args in record_misc_calls:
-                logger.record_tabular_misc_stat(*args)
-
-            # finish logging for this epoch
-            logger.record_tabular("Epoch", epoch)
-            logger.record_tabular("LossEWMA", loss_ewma)
-            logger.record_tabular_misc_stat("Loss", losses)
-            logger.dump_tabular()
-            logger.save_itr_params(
-                epoch, {
-                    'model_state': model_mt.state_dict(),
-                    'opt_state': opt_mt.state_dict(),
-                })
-
-    for sampler in samplers:
-        sampler.shutdown()
+                # finish logging for this epoch
+                logger.record_tabular("Epoch", epoch)
+                logger.record_tabular("LossEWMA", loss_ewma)
+                logger.record_tabular_misc_stat("Loss", losses)
+                logger.dump_tabular()
+                logger.save_itr_params(
+                    epoch, {
+                        'model_state': model_mt.state_dict(),
+                        'opt_state': opt_mt.state_dict(),
+                    })
 
 
 @cli.command()
@@ -514,13 +476,4 @@ def testall(state_dict_or_model_path, env_name, seed, fps, write_latex,
 
 
 if __name__ == '__main__':
-    try:
-        with cli.make_context(sys.argv[0], sys.argv[1:]) as ctx:
-            result = cli.invoke(ctx)
-    except click.ClickException as e:
-        e.show()
-        sys.exit(e.exit_code)
-    except click.exceptions.Exit as e:
-        if e.exit_code == 0:
-            sys.exit(e.exit_code)
-        raise
+    sane_click_init(cli)
