@@ -12,7 +12,8 @@ from rlpyt.utils.prog_bar import ProgBarCounter
 import torch
 import torch.nn.functional as F
 
-from mtil.common import FixedTaskModelWrapper, tree_map
+from mtil.models import FixedTaskModelWrapper
+from mtil.utils.misc import load_state_dict_or_model, tree_map
 
 LATEST_MARKER = 'LATEST'
 
@@ -152,33 +153,6 @@ def strip_mb_preproc_name(env_name):
     """Strip any preprocessor name from a MILBench env name."""
     en = EnvName(env_name)
     return '-'.join((en.name_prefix, en.demo_test_spec, en.version_suffix))
-
-
-def load_state_dict_or_model(state_dict_or_model_path):
-    """Load a model from a path to either a state dict or a full PyTorch model.
-    If it's just a state dict path then the corresponding model path will be
-    inferred (assuming the state dict was produced by `train`). This is useful
-    for the `test` and `testall` commands."""
-    state_dict_or_model_path = os.path.abspath(state_dict_or_model_path)
-    cpu_dev = torch.device('cpu')
-    state_dict_or_model = torch.load(state_dict_or_model_path,
-                                     map_location=cpu_dev)
-    if not isinstance(state_dict_or_model, dict):
-        print(f"Treating supplied path '{state_dict_or_model_path}' as "
-              f"policy (type {type(state_dict_or_model)})")
-        model = state_dict_or_model
-    else:
-        state_dict = state_dict_or_model['model_state']
-        state_dict_dir = os.path.dirname(state_dict_or_model_path)
-        # we save full model once at beginning of training so that we have
-        # architecture saved; not sure how to support loading arbitrary models
-        fm_path = os.path.join(state_dict_dir, 'full_model.pt')
-        print(f"Treating supplied path '{state_dict_or_model_path}' as "
-              f"state dict to insert into model at '{fm_path}'")
-        model = torch.load(fm_path, map_location=cpu_dev)
-        model.load_state_dict(state_dict)
-
-    return model
 
 
 def wrap_model_for_fixed_task(model, env_name):

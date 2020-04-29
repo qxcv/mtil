@@ -88,6 +88,7 @@ class CheckpointFIFOScheduler(FIFOScheduler):
     """Variant of FIFOScheduler that periodically saves the given search
     algorithm. Useful for, e.g., SkOptSearch, where it is helpful to be able to
     re-instantiate the search object later on."""
+
     # FIXME: this is a stupid hack. There should be a better way of saving
     # skopt internals as part of Ray Tune. Perhaps defining a custom trainable
     # would do the trick?

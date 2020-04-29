@@ -21,8 +21,9 @@ def simplify_column_name(col_name):
     return name.name_prefix, name.demo_test_spec.strip('-')
 
 
-@click.option(
-    "--out-path", default=None, help="file path to write to (if not stdout)")
+@click.option("--out-path",
+              default=None,
+              help="file path to write to (if not stdout)")
 @click.command(
     help="Collect .csv files produced by `mtbc testall` and present "
     "them in a series of legible tables")
@@ -44,8 +45,9 @@ def cli(csvs, out_path):
     data['Algo'] = data['latex_alg_name']
     for demo_env_name, group_inds in data.groupby('demo_env').groups.items():
         subset = data.iloc[group_inds]
-        pivot = subset.pivot(
-            index='Algo', columns='test_env', values='cell_contents')
+        pivot = subset.pivot(index='Algo',
+                             columns='test_env',
+                             values='cell_contents')
         new_columns = []
         common_name = None
         for column in pivot.columns:
@@ -56,8 +58,8 @@ def cli(csvs, out_path):
                 assert common_name == prefix, (prefix, common_name)
             new_columns.append(new_name)
         pivot.columns = new_columns
-        latex_str = pivot.to_latex(
-            escape=False, column_format='l' + 'c' * len(new_columns))
+        latex_str = pivot.to_latex(escape=False,
+                                   column_format='l' + 'c' * len(new_columns))
         print(r'\subsection{' + common_name + '}\n', file=out_fp)
         print(latex_str, file=out_fp)
 

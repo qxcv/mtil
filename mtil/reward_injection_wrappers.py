@@ -27,7 +27,7 @@ from rlpyt.algos.pg.ppo import PPO
 from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 
-from mtil.common import RunningMeanVariance, tree_map
+from mtil.utils.misc import RunningMeanVariance, tree_map
 
 # ################# #
 # For PG algorithms #

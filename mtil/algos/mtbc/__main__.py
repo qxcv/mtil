@@ -16,15 +16,16 @@ import torch
 
 from mtil.algos.mtbc.mtbc import (copy_model_into_agent_eval,
                                   do_epoch_training_mt, eval_model,
-                                  get_latest_path, load_state_dict_or_model,
-                                  make_env_tag, saved_model_loader_ft,
-                                  strip_mb_preproc_name,
+                                  get_latest_path, make_env_tag,
+                                  saved_model_loader_ft, strip_mb_preproc_name,
                                   wrap_model_for_fixed_task)
-from mtil.algos.mtgail.demos import (get_demos_meta, make_agent_policy_mt,
-                                     make_mux_sampler)
 from mtil.augmentation import MILBenchAugmentations
-from mtil.common import (MILBenchGymEnv, make_loader_mt, make_logger_ctx,
-                         sane_click_init, set_seeds)
+from mtil.demos import get_demos_meta, make_loader_mt
+from mtil.sample_mux import make_mux_sampler
+from mtil.utils.misc import (load_state_dict_or_model, sane_click_init,
+                             set_seeds)
+from mtil.utils.rlpyt import (MILBenchGymEnv, make_agent_policy_mt,
+                              make_logger_ctx)
 
 
 @click.group()
@@ -235,8 +236,8 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                     env_losses = per_task_losses.get(tv_id, [])
                     record_misc_calls.append((f"Loss{tag}", env_losses))
 
-                # we record score AFTER loss so that losses are all in one place,
-                # and scores are all in another
+                # we record score AFTER loss so that losses are all in one
+                # place, and scores are all in another
                 for args in record_misc_calls:
                     logger.record_tabular_misc_stat(*args)
 

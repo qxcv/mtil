@@ -13,8 +13,10 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from mtil.common import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
-                         MultiTaskAffineLayer, make_loader_mt, tree_map)
+from mtil.demos import make_loader_mt
+from mtil.models import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
+                         MultiTaskAffineLayer)
+from mtil.utils.misc import tree_map
 
 DiscrimReplaySamples = namedarraytuple("DiscrimReplaySamples",
                                        ["all_observation", "all_action"])

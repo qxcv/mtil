@@ -1,128 +1,22 @@
-"""MTGAIL-specific tools for loading trajectories.
-
-TODO: unify this with code in common.py. Really this should replace that code
-because it's much cleaner :)"""
+"""Multi-task-capable tools for loading trajectories."""
 
 import collections
 
+# FIXME: is it even worth dealing with dicts? Instead should I just make
+# EVERYTHING into a namedarraytuple?
 from milbench.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 from milbench.benchmarks import EnvName
 import numpy as np
-from rlpyt.agents.pg.categorical import CategoricalPgAgent
 import torch
 from torch.utils import data
 
-# TODO: factor load_state_dict_or_model from mtbc out into common
-from mtil.algos.mtgail.sample_mux import (EnvIDObsArray,
-                                          MILBenchEnvMultiplexer,
-                                          MuxCpuSampler, MuxGpuSampler,
-                                          MuxTaskModelWrapper)
-from mtil.common import (MILBenchTrajInfo, MultiHeadPolicyNet, get_env_metas,
-                         tree_map)
-
-# vvvvvvvvvvv STUFF TO FACTOR OUT vvvvvvvvvvvvvvv
+from mtil.sample_mux import EnvIDObsArray
+from mtil.utils.misc import tree_map
+from mtil.utils.rlpyt import get_env_metas
+from mtil.utils.torch import fixed_default_collate
 
 
-def get_policy_spec_milbench(env_metas):
-    """Get `MultiHeadPolicyNet`'s `in_chans` and `n_actions` kwargs
-    automatically from env metadata from a MILBench environment. Does sanity
-    check to ensure that input & output shapes are the same for all envs."""
-    obs_space = env_metas[0].observation_space
-    act_space = env_metas[0].action_space
-    assert all(em.observation_space == obs_space for em in env_metas)
-    assert all(em.action_space == act_space for em in env_metas)
-    assert len(obs_space.shape) == 3, obs_space.shape
-    in_chans = obs_space.shape[-1]
-    n_actions = act_space.n  # categorical action space
-    model_kwargs = dict(in_chans=in_chans, n_actions=n_actions)
-    return model_kwargs
-
-
-def get_demos_meta(*,
-                   demo_paths,
-                   omit_noop=False,
-                   transfer_variants=(),
-                   preproc_name=None):
-    dataset_mt, variant_groups = load_demos_mtgail(demo_paths,
-                                                   transfer_variants,
-                                                   mb_preproc=preproc_name,
-                                                   omit_noop=omit_noop)
-
-    print("Getting env metadata")
-    all_env_names = sorted(variant_groups.task_variant_by_name.keys())
-    env_metas = get_env_metas(*all_env_names)
-
-    task_ids_and_demo_env_names = [
-        (env_name, task_id) for env_name, (task_id, variant_id)
-        in variant_groups.task_variant_by_name.items()
-        # variant ID 0 is (usually) the demo env
-        # TODO: make sure this is ACTUALLY the demo env
-        if variant_id == 0
-    ]  # yapf: disable
-
-    rv = {
-        'dataset_mt': dataset_mt,
-        'variant_groups': variant_groups,
-        'env_metas': env_metas,
-        'task_ids_and_demo_env_names': task_ids_and_demo_env_names,
-    }
-    return rv
-
-
-def make_mux_sampler(*, variant_groups, env_metas, use_gpu, batch_B, batch_T):
-    print("Setting up environment multiplexer")
-    # local copy of Gym env, w/ args to create equivalent env in the sampler
-    env_mux = MILBenchEnvMultiplexer(variant_groups)
-    new_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(batch_B)
-    all_env_names = sorted(variant_groups.task_variant_by_name.keys())
-    if new_batch_B != batch_B:
-        print(f"Increasing sampler batch size from '{batch_B}' to "
-              f"'{new_batch_B}' to be divisible by number of "
-              f"environments ({len(all_env_names)})")
-        batch_B = new_batch_B
-
-    # number of transitions collected during each round of sampling will be
-    # batch_T * batch_B = n_steps * n_envs
-    max_steps = max(
-        [env_meta.spec.max_episode_steps for env_meta in env_metas])
-
-    print("Setting up sampler")
-    if use_gpu:
-        sampler_ctor = MuxGpuSampler
-    else:
-        sampler_ctor = MuxCpuSampler
-    sampler = sampler_ctor(env_mux,
-                           env_ctor_kwargs,
-                           max_decorrelation_steps=max_steps,
-                           TrajInfoCls=MILBenchTrajInfo,
-                           batch_T=batch_T,
-                           batch_B=batch_B)
-
-    return sampler, batch_B
-
-
-def make_agent_policy_mt(env_metas, task_ids_and_demo_env_names):
-    model_in_out_kwargs = get_policy_spec_milbench(env_metas)
-    model_kwargs = {
-        'env_ids_and_names': task_ids_and_demo_env_names,
-        **model_in_out_kwargs,
-    }
-    model_ctor = MultiHeadPolicyNet
-    ppo_agent = CategoricalPgAgent(
-        ModelCls=MuxTaskModelWrapper,
-        model_kwargs=dict(
-            model_ctor=model_ctor,
-            # task_id=env_id,
-            model_kwargs=model_kwargs))
-    return ppo_agent, model_ctor, model_kwargs
-
-
-# ^^^^^^^^^^^ STUFF TO FACTOR OUT ^^^^^^^^^^^^^^^
-
-
-# FIXME: is it even worth dealing with dicts? Instead should I just make
-# EVERYTHING into a namedarraytuple?
 class DictTensorDataset(data.Dataset):
     def __init__(self, tensor_dict):
         # need at least one tensor
@@ -301,10 +195,10 @@ def insert_task_ids(obs_seq, task_id, variant_id):
     return obs_seq._replace(obs=eio_arr)
 
 
-def load_demos_mtgail(demo_paths,
-                      variant_names=(),
-                      mb_preproc=None,
-                      omit_noop=False):
+def load_demos_mt(demo_paths,
+                  variant_names=(),
+                  mb_preproc=None,
+                  omit_noop=False):
     # load demo pickles from disk and sort into dict
     demo_dicts = load_demos(demo_paths)
     demo_trajs_by_env = {}
@@ -334,3 +228,69 @@ def load_demos_mtgail(demo_paths,
                                           omit_noop=omit_noop)
 
     return dataset_mt, variant_groups
+
+
+def make_loader_mt(dataset, batch_size):
+    """Construct sampler that randomly chooses N items from N-sample dataset,
+    weighted so that it's even across all tasks (so no task implicitly has
+    higher priority than the others). Assumes the given dataset is a
+    TensorDataset produced by trajectories_to_dataset_mt."""
+    task_ids = dataset.tensor_dict['obs'].task_id
+    unique_ids, frequencies = torch.unique(task_ids,
+                                           return_counts=True,
+                                           sorted=True)
+    # all tasks must be present for this to work
+    assert torch.all(unique_ids == torch.arange(len(unique_ids))), (unique_ids)
+    freqs_total = torch.sum(frequencies).to(torch.float)
+    unique_weights = frequencies.to(torch.float) / freqs_total
+    weights = unique_weights[task_ids]
+
+    weighted_sampler = data.WeightedRandomSampler(weights,
+                                                  len(weights),
+                                                  replacement=True)
+    batch_sampler = data.BatchSampler(weighted_sampler,
+                                      batch_size=batch_size,
+                                      drop_last=True)
+
+    loader = data.DataLoader(dataset,
+                             pin_memory=False,
+                             batch_sampler=batch_sampler,
+                             collate_fn=fixed_default_collate)
+
+    return loader
+
+
+def _conv_out_d(d, kernel_size=1, stride=1, padding=0, dilation=1):
+    numerator = d + 2 * padding - dilation * (kernel_size - 1) - 1
+    return int(np.floor(numerator / stride + 1))
+
+
+def get_demos_meta(*,
+                   demo_paths,
+                   omit_noop=False,
+                   transfer_variants=(),
+                   preproc_name=None):
+    dataset_mt, variant_groups = load_demos_mt(demo_paths,
+                                               transfer_variants,
+                                               mb_preproc=preproc_name,
+                                               omit_noop=omit_noop)
+
+    print("Getting env metadata")
+    all_env_names = sorted(variant_groups.task_variant_by_name.keys())
+    env_metas = get_env_metas(*all_env_names)
+
+    task_ids_and_demo_env_names = [
+        (env_name, task_id) for env_name, (task_id, variant_id)
+        in variant_groups.task_variant_by_name.items()
+        # variant ID 0 is (usually) the demo env
+        # TODO: make sure this is ACTUALLY the demo env
+        if variant_id == 0
+    ]  # yapf: disable
+
+    rv = {
+        'dataset_mt': dataset_mt,
+        'variant_groups': variant_groups,
+        'env_metas': env_metas,
+        'task_ids_and_demo_env_names': task_ids_and_demo_env_names,
+    }
+    return rv

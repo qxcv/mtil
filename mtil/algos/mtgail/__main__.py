@@ -7,24 +7,21 @@ that parts of the implementation can be pickled."""
 # the segfault still happens). Haven't had time to chase down.
 import multiprocessing as mp
 import os
-import readline  # noqa: F401
 
 import click
 from rlpyt.utils.logging import logger
 import torch
 
-# TODO: factor load_state_dict_or_model from mtbc out into common
-# to import: get_demos_meta, make_mux_sampler, make_agent_policy_mt
-from mtil.algos.mtbc.mtbc import load_state_dict_or_model
-from mtil.algos.mtgail.demos import (get_demos_meta, make_agent_policy_mt,
-                                     make_mux_sampler)
 from mtil.algos.mtgail.embedded_bc import BCCustomRewardPPO
 from mtil.algos.mtgail.mtgail import (GAILMinibatchRl, GAILOptimiser,
                                       MILBenchDiscriminatorMT, RewardModel)
 from mtil.augmentation import MILBenchAugmentations
-from mtil.common import (make_loader_mt, make_logger_ctx, sane_click_init,
-                         set_seeds)
+from mtil.demos import get_demos_meta, make_loader_mt
 from mtil.reward_injection_wrappers import RewardEvaluatorMT
+from mtil.sample_mux import make_mux_sampler
+from mtil.utils.misc import (load_state_dict_or_model, sane_click_init,
+                             set_seeds)
+from mtil.utils.rlpyt import make_agent_policy_mt, make_logger_ctx
 
 
 @click.group()

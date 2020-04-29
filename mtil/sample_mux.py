@@ -26,7 +26,8 @@ from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 import torch.nn.functional as F
 
-from mtil.common import AgentModelWrapper, MILBenchGymEnv
+from mtil.models import AgentModelWrapper
+from mtil.utils.rlpyt import MILBenchGymEnv, MILBenchTrajInfo
 
 
 def _mux_sampler(common_kwargs, worker_kwargs):
@@ -171,8 +172,8 @@ class MuxGpuSampler(MuxParallelSampler, GpuSampler):
     pass
 
 
-EnvIDObs = NamedTupleSchema(
-            'EnvIDObs', ('observation', 'task_id', 'variant_id'))
+EnvIDObs = NamedTupleSchema('EnvIDObs',
+                            ('observation', 'task_id', 'variant_id'))
 EnvIDObsArray = NamedArrayTupleSchema(EnvIDObs._typename, EnvIDObs._fields)
 
 
@@ -185,8 +186,7 @@ class EnvIDWrapper(Wrapper):
         task_space = IntBox(0, num_tasks)
         variant_space = IntBox(0, max_num_variants)
         self.observation_space = Composite(
-            (env.observation_space, task_space, variant_space),
-            EnvIDObs)
+            (env.observation_space, task_space, variant_space), EnvIDObs)
 
     def reset(self, *args, **kwargs):
         obs = super().reset(*args, **kwargs)
@@ -198,8 +198,7 @@ class EnvIDWrapper(Wrapper):
         return env_step._replace(observation=new_obs)
 
     def wrap_obs(self, obs):
-        new_obs = EnvIDObs._make(
-            (obs, self._task_id_np, self._variant_id_np))
+        new_obs = EnvIDObs._make((obs, self._task_id_np, self._variant_id_np))
         return new_obs
 
     @property
@@ -272,3 +271,35 @@ class MuxTaskModelWrapper(AgentModelWrapper):
         pi = F.softmax(logits, dim=-1)
         pi, v = restore_leading_dims((pi, v), lead_dim, T, B)
         return pi, v
+
+
+def make_mux_sampler(*, variant_groups, env_metas, use_gpu, batch_B, batch_T):
+    print("Setting up environment multiplexer")
+    # local copy of Gym env, w/ args to create equivalent env in the sampler
+    env_mux = MILBenchEnvMultiplexer(variant_groups)
+    new_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(batch_B)
+    all_env_names = sorted(variant_groups.task_variant_by_name.keys())
+    if new_batch_B != batch_B:
+        print(f"Increasing sampler batch size from '{batch_B}' to "
+              f"'{new_batch_B}' to be divisible by number of "
+              f"environments ({len(all_env_names)})")
+        batch_B = new_batch_B
+
+    # number of transitions collected during each round of sampling will be
+    # batch_T * batch_B = n_steps * n_envs
+    max_steps = max(
+        [env_meta.spec.max_episode_steps for env_meta in env_metas])
+
+    print("Setting up sampler")
+    if use_gpu:
+        sampler_ctor = MuxGpuSampler
+    else:
+        sampler_ctor = MuxCpuSampler
+    sampler = sampler_ctor(env_mux,
+                           env_ctor_kwargs,
+                           max_decorrelation_steps=max_steps,
+                           TrajInfoCls=MILBenchTrajInfo,
+                           batch_T=batch_T,
+                           batch_B=batch_B)
+
+    return sampler, batch_B
