@@ -170,7 +170,7 @@ def add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc):
 
     # debug print to tell us what names changed
     _new_names = demo_env_names + variant_names
-    print(f"Splicing preprocessor '{add_mb_preproc}' into environments "
+    print(f"Splicing preprocessor '{mb_preproc}' into environments "
           f"{_orig_names}. New names are {_new_names}")
     del _orig_names, _new_names
 
@@ -208,9 +208,11 @@ def load_demos_mt(demo_paths,
 
     # if necessary, update the environment names to also include a preprocessor
     # name
-    if add_mb_preproc:
+    if mb_preproc:
         demo_trajs_by_env, demo_env_names, variant_names \
             = add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc)
+    else:
+        demo_env_names = sorted(set(demo_trajs_by_env))
 
     # now make a grouped index of env names & add env IDs to observations
     variant_groups = GroupedVariantNames(demo_env_names, variant_names)

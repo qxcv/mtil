@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>Sam's IL task survey</title>
+
+        <!-- dependencies -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/4.7.6/handlebars.min.js"></script>
+
+        <!-- script -->
+        <script>
+         var globalData = [];
+         function registerData(data) {
+            for (var i =0; i < data.length; ++i) {
+            globalData.push(data[i]);
+            }
+         }
+
+         $(document).ready(function() {
+            console.log('hi');
+             var form = $("#form-parts");
+             var hbt = Handlebars.compile(hbTemplate);
+             for (var i = 0; i < globalData.length; ++i) {
+                 var thisTask = globalData[i];
+                 var rendered = hbt(thisTask);
+                 var nodes = jQuery.parseHTML(rendered);
+                 form.append(nodes);
+             }
+         });
+        </script>
+
+        <!-- data paths -->
+        <script src="data.js"></script>
+
+        <!-- HB template -->
+         <script>
+         var hbTemplate = (
+            "<div class='form-part'>" +
+                "<h2>Task {{task_num}}</h2>" +
+                "<div class='task-card'>" +
+                    "<h3>Demonstration</h3>" +
+                    "<video autoplay loop controls width='{{res}}' height='{{res}}'>" +
+                        "<source src='{{demo_video}}' type='video/mp4' />" +
+                    "</video>" +
+                    "<textarea rows='2' cols='40' placeholder='What does the robot do in this video?'></textarea>" +
+                "</div>" +
+                "{{#each test_images}}" +
+                    "<div class='task-card'>" +
+                        "<h3>Test scenario #{{this.num}}</h3>" +
+                        "<img src='{{this.path}}' width='{{res}}' height='{{res}}' alt='Test scenario #{{this.num}}' />" +
+                        "<textarea rows='2' cols='40' placeholder='What would the robot have to do in this situation to achieve the same goal?'></textarea>" +
+                    "</div>" +
+                "{{/each}}" +
+                "<div class='task-card'>" +
+                    "<h3>Overall task description</h3>" +
+                    "<textarea rows='2' cols='40' placeholder='What goal is the robot trying to achieve in all of these situations?'></textarea>" +
+                "</div>" +
+            "</div>"
+        );
+        </script>
+    </head>
+    <body>
+        <h1>Sam's IL task survey</h1>
+        <p>(context goes here)</p>
+
+        <form id="form-parts" method="POST" action="">
+            <!-- <div class="form-part">
+                 <h2>Task {{ task_num }}</h2>
+
+                 <h3>Demonstration</h3>
+                 <video autoplay loop width="{{ res }}" height="{{ res }}">
+                 <source src="{{ demo_video }}" type="video/mp4" />
+                 </video>
+                 <textarea rows="2" cols="40" placeholder="What is the robot doing in this video?"></textarea>
+
+                 <h3>Test scenario #1</h3>
+                 <img src="{{ demo_image }}" width="{{ res }}" height="{{ res }}" alt="Test scenario #1" />
+                 <textarea rows="2" cols="40" placeholder="What would the robot do in this situation to achieve the same goal?"></textarea>
+
+                 <h3>Overall task description</h3>
+                 <textarea rows="2" cols="40" placeholder="What goal is the robot trying to achieve in all of these situations?"></textarea>
+                 </div> -->
+        </form>
+    </body>
+</html>
