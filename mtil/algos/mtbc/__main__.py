@@ -85,7 +85,7 @@ def cli():
 # set this to some big value if training on perceptron or something
 @click.option(
     "--passes-per-eval",
-    default=1,
+    default=20,
     help="num training passes through full dataset between evaluations")
 @click.option("--snapshot-gap",
               default=10,
