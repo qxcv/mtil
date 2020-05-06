@@ -44,7 +44,7 @@ def cli():
 @click.option("--gpu-idx", default=None, help="index of GPU to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
-@click.option("--epochs", default=50, help="epochs of training to perform")
+@click.option("--epochs", default=25, help="epochs of training to perform")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
 @click.option("--eval-n-traj",
               default=10,
