@@ -104,6 +104,8 @@ def gen_command_gail(demo_paths, run_name, seed, n_steps=None, **kwargs):
         str(run_name),
         "--seed",
         str(seed),
+        "--gpu-idx",
+        "0",
         *extras,
     ]
     if n_steps is not None:
@@ -127,6 +129,8 @@ def gen_command_bc(demo_paths, run_name, seed, **kwargs):
         run_name,
         "--seed",
         str(seed),
+        "--gpu-idx",
+        "0",
         *extras,
     ]
     cmd_parts.extend(demo_paths)
@@ -144,7 +148,6 @@ def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name):
         "testall",
         "--env-name",
         env_name,
-        os.path.join(snap_dir, 'itr_LATEST.pkl'),
         "--run-id",
         f"{run_name}-on-{env_shorthand}",
         "--write-latex",
@@ -153,6 +156,10 @@ def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name):
         f"{snap_dir}/eval-{env_shorthand}.csv",
         "--n-rollouts",
         "100",
+        "--gpu-idx",
+        "0",
+        "--load-latest",
+        os.path.join(snap_dir, 'itr_LATEST.pkl'),
     ]
     return new_cmd
 
@@ -239,7 +246,7 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
 
                 st_eval_cmd = make_eval_cmd(run_name, st_dir, task,
                                             ENV_NAMES[task])
-                runs.append(Run(st_cmd, st_eval_cmd))
+                runs.append(Run(st_cmd, [st_eval_cmd]))
 
     return runs
 
@@ -311,23 +318,23 @@ def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
             del running_train_cmds[f_handle]
             try:
                 ret_value = ray.get(f_handle)
-                print(f"Run {run} returned value {ret_value}")
+                print(f"Run {run} returned value {ret_value.returncode}")
             except Exception as ex:
                 print(f"Got exception while popping run {run}: {ex}")
                 continue
 
             for test_cmd in run.test_cmds:
-                test_handle = call_remote(test_cmd)
-                running_test_cmds.append(test_handle)
+                test_handle = call_remote.remote(test_cmd)
+                running_test_cmds[test_handle] = run
 
         done_test_cmds, _ = ray.wait(list(running_test_cmds.keys()),
                                      timeout=1.0)
         for d_handle in done_test_cmds:
-            run = done_test_cmds[d_handle]
-            del done_test_cmds[d_handle]
+            run = running_test_cmds[d_handle]
+            del running_test_cmds[d_handle]
             try:
                 ret_value = ray.get(d_handle)
-                print(f"Test command on run {run} returned value {ret_value}")
+                print(f"Test command on run {run} returned value {ret_value.returncode}")
             except Exception as ex:
                 print(f"Got exception from test cmd for run {run}: {ex}")
                 continue
