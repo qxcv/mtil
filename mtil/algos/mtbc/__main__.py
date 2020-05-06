@@ -16,7 +16,7 @@ import torch
 
 from mtil.algos.mtbc.mtbc import (copy_model_into_agent_eval,
                                   do_epoch_training_mt, eval_model,
-                                  get_latest_path, make_env_tag,
+                                  eval_model_st, get_latest_path, make_env_tag,
                                   saved_model_loader_ft, strip_mb_preproc_name,
                                   wrap_model_for_fixed_task)
 from mtil.augmentation import MILBenchAugmentations
@@ -140,7 +140,6 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         sampler_batch_B = batch_size
         # this doesn't really matter
         sampler_batch_T = 5
-        # FIXME: what agent is this sampler using?
         sampler, sampler_batch_B = make_mux_sampler(
             variant_groups=variant_groups,
             env_metas=env_metas,
@@ -371,7 +370,7 @@ class MTBCEvalProtocol(EvaluationProtocol):
         dev = torch.device(["cpu", f"cuda:{self.gpu_idx}"][use_gpu])
         env_agent.to_device(dev.index if use_gpu else None)
         try:
-            scores = eval_model(env_sampler, 0, self.n_rollouts)
+            scores = eval_model_st(env_sampler, 0, self.n_rollouts)
         finally:
             env_sampler.shutdown()
 

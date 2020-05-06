@@ -180,6 +180,10 @@ def eval_model(sampler_mt, itr, n_traj=10):
     # BUG: this doesn't reset the sampler envs & agent (because I don't know
     # how), so it yields somewhat inaccurate results when called repeatedly on
     # envs with different horizons.
+    # BUG: if you only call this once (or if you fix the reset issue so that it
+    # always resets when called) then it will be biased towards short
+    # trajectories. Not an issue for fixed horizon, but will be an issue for
+    # other things.
     scores_by_task_var = collections.defaultdict(lambda: [])
     while (not scores_by_task_var
            or min(map(len, scores_by_task_var.values())) < n_traj):
@@ -196,6 +200,20 @@ def eval_model(sampler_mt, itr, n_traj=10):
     # clip any extra rollouts
     scores_by_task_var = {k: v[:n_traj] for k, v in scores_by_task_var.items()}
     return scores_by_task_var
+
+
+def eval_model_st(sampler_st, itr, n_traj=10):
+    # BUGS: same as eval_model()
+    scores = []
+    while len(scores) < n_traj:
+        samples_pyt, _ = sampler_st.obtain_samples(itr)
+        eval_scores = samples_pyt.env.env_info.eval_score
+        dones = samples_pyt.env.done.flatten()
+        done_scores = eval_scores.flatten()[dones]
+        scores.extend(s.item() for s in done_scores)
+    # clip any extra rollouts
+    return scores[:n_traj]
+
 
 
 def saved_model_loader_ft(state_dict_or_model_path, env_name):
