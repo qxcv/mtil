@@ -71,20 +71,20 @@ def cli():
               help="number of past epochs worth of interaction to save in "
               "discriminator replay buffer")
 @click.option("--total-n-steps",
-              default=5e6,
+              default=4e6,
               help="total number of steps to take in environment")
 @click.option("--bc-loss", default=0.0, help="behavioural cloning loss coeff")
 @click.option("--run-name",
               default=None,
               type=str,
               help="unique name for this run")
-@click.option("--snapshot-gap", default=1, help="evals between snapshots")
+@click.option("--snapshot-gap", default=10, help="evals between snapshots")
 @click.option("--load-policy",
               default=None,
               type=str,
               help="path to a policy snapshot to load (e.g. from MTBC)")
 @click.option("--omit-noop/--no-omit-noop",
-              default=True,
+              default=False,
               help="omit demonstration (s,a) pairs whenever a is a noop")
 @click.option("--disc-aug/--no-disc-aug",
               default=True,

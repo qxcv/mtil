@@ -112,7 +112,7 @@ def gen_command_gail(demo_paths, run_name, seed, n_steps=None, **kwargs):
         assert n_steps == int(n_steps), n_steps
         cmd_parts.extend(['--total-n-steps', str(int(n_steps))])
     cmd_parts.extend(demo_paths)
-    out_dir = f"./scratch/run_mtgail-{run_name}/"
+    out_dir = f"./scratch/run_{run_name}/"
     return cmd_parts, out_dir
 
 
