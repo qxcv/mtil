@@ -14,9 +14,9 @@ import yaml
 
 DEMO_PATH_PATTERNS = {
     'move-to-corner': '~/repos/milbench/demos-simplified/move-to-corner-2020-03-*/*.pkl.gz',  # noqa: E501
-    'move-to-region': '~/repos/milbench/demos-simplified/move-to-region-2020-05-*/*.pkl.gz',  # noqa: E501
+    'move-to-region': '~/repos/milbench/demos-simplified/move-to-region-2020-04-*/*.pkl.gz',  # noqa: E501
     'match-regions': '~/repos/milbench/demos-simplified/match-regions-2020-03-*/*.pkl.gz',  # noqa: E501
-    'find-dupe': '~/repos/milbench/demos-simplified/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
+    'find-dupe': '~/repos/milbench/demos-simplified/find-dupe-2020-04-*/*.pkl.gz',  # noqa: E501
     'cluster-colour': '~/repos/milbench/demos-simplified/cluster-colour-2020-03-*/*.pkl.gz',  # noqa: E501
     'cluster-type': '~/repos/milbench/demos-simplified/cluster-type-2020-03-*/*.pkl.gz',  # noqa: E501
 }  # yapf: disable
@@ -30,7 +30,7 @@ ENV_NAMES = {
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_GPUS = 4
-DEFAULT_NUM_SEEDS = 5
+DEFAULT_NUM_SEEDS = 3
 BASE_START_SEED = 3255779925
 
 
