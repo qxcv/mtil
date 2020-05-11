@@ -3,6 +3,7 @@
 install scikit-video`."""
 import json
 import os
+import random
 
 import click
 import gym
@@ -16,6 +17,7 @@ import skvideo.io as vidio
 
 DEMO_FPS = 8
 OUT_RES = 192
+MAX_DEMOS = 10
 
 
 @click.command()
@@ -24,14 +26,24 @@ OUT_RES = 192
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, ntest, dest):
     """Make survey media/HTML from a given demonstration `demo`."""
+    random.seed(42)
     data_prefix = 'data'
+    print("Loading demos")
     all_demos = load_demos(demos)
+    print("Done")
+    demos_by_env = {}
+    for dd in all_demos:
+        demos_by_env.setdefault(dd['env_name'],
+                                []).append(dd['trajectory'].obs)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(dest, exist_ok=True)
     os.chdir(dest)
     task_data = []
-    for task_num, demo_dict in enumerate(all_demos, start=1):
-        name_data = EnvName(demo_dict['env_name'])
+    items = list(demos_by_env.items())
+    random.shuffle(items)
+    items = iter(items)  # so things get evicted from memory faster
+    for task_num, (env_name, all_demo_obs) in enumerate(items, start=1):
+        name_data = EnvName(env_name)
         test_name = name_data.name_prefix + '-TestAll' \
             + name_data.version_suffix
         print('Env name', name_data.env_name, 'with test variant', test_name)
@@ -53,12 +65,14 @@ def main(demos, ntest, dest):
             test_files.append({
                 'num': test_num + 1,
                 'path': out_file,
+                'task_num': task_num,
             })
         test_env.close()
         del test_env
 
         # format of demo_obs: (T, H, W, C)
-        demo_obs = demo_dict['trajectory'].obs
+        random.shuffle(all_demo_obs)
+        demo_obs = np.concatenate(all_demo_obs[:MAX_DEMOS], axis=0)
         demo_obs = np.stack([
             skimage.img_as_ubyte(sktrans.resize(f, (OUT_RES, OUT_RES)))
             for f in demo_obs
@@ -76,6 +90,7 @@ def main(demos, ntest, dest):
 
         # save this for later
         task_data.append({
+            'env_name': name_data.env_name,
             'task_num': task_num,
             'demo_video': demo_path,
             'test_images': test_files,
