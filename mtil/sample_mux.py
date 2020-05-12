@@ -172,21 +172,31 @@ class MuxGpuSampler(MuxParallelSampler, GpuSampler):
     pass
 
 
-EnvIDObs = NamedTupleSchema('EnvIDObs',
-                            ('observation', 'task_id', 'variant_id'))
+EnvIDObs = NamedTupleSchema(
+    'EnvIDObs',
+    # Conventions:
+    # - variant_id is 0 for the demonstration variant
+    # - source_id is 0 for novice rollouts, and can take values 1,2,… for all
+    #   others
+    ('observation', 'task_id', 'variant_id', 'source_id'))
 EnvIDObsArray = NamedArrayTupleSchema(EnvIDObs._typename, EnvIDObs._fields)
 
 
 class EnvIDWrapper(Wrapper):
-    def __init__(self, env, task_id, variant_id, num_tasks, max_num_variants):
+    def __init__(self, env, task_id, variant_id, source_id, num_tasks,
+                 max_num_variants, num_demo_sources):
         super().__init__(env)
         assert isinstance(task_id, int) and isinstance(variant_id, int)
         self._task_id_np = np.asarray([task_id]).reshape(())
         self._variant_id_np = np.asarray([variant_id]).reshape(())
+        self._source_id = np.asarray([source_id]).reshape(())
         task_space = IntBox(0, num_tasks)
         variant_space = IntBox(0, max_num_variants)
+        # remember, 0 is the novice!
+        source_space = IntBox(0, num_demo_sources + 1)
         self.observation_space = Composite(
-            (env.observation_space, task_space, variant_space), EnvIDObs)
+            (env.observation_space, task_space, variant_space, source_space),
+            EnvIDObs)
 
     def reset(self, *args, **kwargs):
         obs = super().reset(*args, **kwargs)
@@ -198,7 +208,8 @@ class EnvIDWrapper(Wrapper):
         return env_step._replace(observation=new_obs)
 
     def wrap_obs(self, obs):
-        new_obs = EnvIDObs._make((obs, self._task_id_np, self._variant_id_np))
+        new_obs = EnvIDObs._make(
+            (obs, self._task_id_np, self._variant_id_np, self._source_id))
         return new_obs
 
     @property
@@ -212,13 +223,20 @@ class MILBenchEnvMultiplexer:
     environments based on a *task ID* and *variant ID*. Useful for passing to
     rlpyt sampler constructors in order to get a different environment in each
     sampler process."""
-    def __init__(self, variant_groups):
+    def __init__(self, variant_groups, num_demo_sources=0):
         """Construct the multiplexer.
 
         Arguments:
             variant_groups (GroupdVariantNames): structure holding all of the
-                known tasks and task variant names. Contains task IDs too."""
+                known tasks and task variant names. Contains task IDs too.
+            num_demo_sources (int): the total number of demonstration source
+                IDs for whatever dataset is being used to train this algorithm.
+                Source ID 0 (special ID for novice rollouts) will be used for
+                all rollouts from this environment. This is only important when
+                using, e.g., Min-BC; if not using source data, then it is safe
+                to set it to 0."""
         self.variant_groups = variant_groups
+        self.num_demo_sources = num_demo_sources
 
     def get_batch_size_and_kwargs(self, min_batch_size):
         """Compute an sampler batch size that is >= min_batch_size
@@ -246,9 +264,14 @@ class MILBenchEnvMultiplexer:
         task_id, variant_id = env_key
         env_name = self.variant_groups.env_name_by_task_variant[env_key]
         mb_env = MILBenchGymEnv(env_name)
-        id_env = EnvIDWrapper(mb_env, task_id, variant_id,
-                              self.variant_groups.num_tasks,
-                              self.variant_groups.max_num_variants)
+        id_env = EnvIDWrapper(
+            mb_env,
+            task_id=task_id,
+            variant_id=variant_id,
+            source_id=0,  # novice
+            num_tasks=self.variant_groups.num_tasks,
+            max_num_variants=self.variant_groups.max_num_variants,
+            num_demo_sources=self.num_demo_sources)
         return id_env
 
 
@@ -273,10 +296,11 @@ class MuxTaskModelWrapper(AgentModelWrapper):
         return pi, v
 
 
-def make_mux_sampler(*, variant_groups, env_metas, use_gpu, batch_B, batch_T):
+def make_mux_sampler(*, variant_groups, num_demo_sources, env_metas, use_gpu,
+                     batch_B, batch_T):
     print("Setting up environment multiplexer")
     # local copy of Gym env, w/ args to create equivalent env in the sampler
-    env_mux = MILBenchEnvMultiplexer(variant_groups)
+    env_mux = MILBenchEnvMultiplexer(variant_groups, num_demo_sources)
     new_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(batch_B)
     all_env_names = sorted(variant_groups.task_variant_by_name.keys())
     if new_batch_B != batch_B:

@@ -182,16 +182,18 @@ def add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc):
         for orig_env_name, traj in demo_trajs_by_env.items()
     }
 
-    return demo_trajs_by_env, demo_env_names, variant_names
+    return demo_trajs_by_env, demo_env_names, variant_names, new_env_names
 
 
-def insert_task_ids(obs_seq, task_id, variant_id):
+def insert_task_source_ids(obs_seq, task_id, variant_id, source_id):
     nobs = len(obs_seq.obs)
     task_id_array = np.full((nobs, ), task_id, dtype='int64')
     variant_id_array = np.full((nobs, ), variant_id, dtype='int64')
+    source_id_array = np.full((nobs, ), source_id, dtype='int64')
     eio_arr = EnvIDObsArray(observation=obs_seq.obs,
                             task_id=task_id_array,
-                            variant_id=variant_id_array)
+                            variant_id=variant_id_array,
+                            source_id=source_id_array)
     return obs_seq._replace(obs=eio_arr)
 
 
@@ -201,16 +203,24 @@ def load_demos_mt(demo_paths,
                   omit_noop=False):
     # load demo pickles from disk and sort into dict
     demo_dicts = load_demos(demo_paths)
+    num_demo_sources = len(demo_dicts)
     demo_trajs_by_env = {}
-    for demo_dict in demo_dicts:
-        demo_trajs_by_env.setdefault(demo_dict['env_name'], []) \
-                         .append(demo_dict['trajectory'])
+    source_ids_by_env = {}
+    for source_id, demo_dict in enumerate(demo_dicts, start=1):
+        env_name = demo_dict['env_name']
+        traj = demo_dict['trajectory']
+        demo_trajs_by_env.setdefault(env_name, []).append(traj)
+        source_ids_by_env.setdefault(env_name, []).append(source_id)
 
     # if necessary, update the environment names to also include a preprocessor
     # name
     if mb_preproc:
-        demo_trajs_by_env, demo_env_names, variant_names \
+        demo_trajs_by_env, demo_env_names, variant_names, new_env_names \
             = add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc)
+        source_ids_by_env = {
+            new_env_names[k]: v
+            for k, v in source_ids_by_env.items()
+        }
     else:
         demo_env_names = sorted(set(demo_trajs_by_env))
 
@@ -218,9 +228,12 @@ def load_demos_mt(demo_paths,
     variant_groups = GroupedVariantNames(demo_env_names, variant_names)
     for env_name in demo_trajs_by_env.keys():
         task_id, variant_id = variant_groups.task_variant_by_name[env_name]
+        trajs = demo_trajs_by_env[env_name]
+        source_ids = source_ids_by_env[env_name]
+        assert len(trajs) == len(source_ids)
         demo_trajs_by_env[env_name] = [
-            insert_task_ids(traj, task_id, variant_id)
-            for traj in demo_trajs_by_env[env_name]
+            insert_task_source_ids(traj, task_id, variant_id, source_id)
+            for traj, source_id in zip(trajs, source_ids)
         ]
 
     # Convert the loaded trajectories into a torch Dataset. This removes
@@ -229,7 +242,7 @@ def load_demos_mt(demo_paths,
     dataset_mt = make_tensor_dict_dataset(demo_trajs_by_env,
                                           omit_noop=omit_noop)
 
-    return dataset_mt, variant_groups
+    return dataset_mt, variant_groups, num_demo_sources
 
 
 def make_loader_mt(dataset, batch_size):
@@ -244,7 +257,8 @@ def make_loader_mt(dataset, batch_size):
     # all tasks must be present for this to work
     assert torch.all(unique_ids == torch.arange(len(unique_ids))), (unique_ids)
     freqs_total = torch.sum(frequencies).to(torch.float)
-    unique_weights = frequencies.to(torch.float) / freqs_total
+    unique_weights = freqs_total / frequencies.to(torch.float)
+    unique_weights = unique_weights / unique_weights.sum()
     weights = unique_weights[task_ids]
 
     weighted_sampler = data.WeightedRandomSampler(weights,
@@ -272,10 +286,11 @@ def get_demos_meta(*,
                    omit_noop=False,
                    transfer_variants=(),
                    preproc_name=None):
-    dataset_mt, variant_groups = load_demos_mt(demo_paths,
-                                               transfer_variants,
-                                               mb_preproc=preproc_name,
-                                               omit_noop=omit_noop)
+    dataset_mt, variant_groups, num_demo_sources = load_demos_mt(
+        demo_paths,
+        transfer_variants,
+        mb_preproc=preproc_name,
+        omit_noop=omit_noop)
 
     print("Getting env metadata")
     all_env_names = sorted(variant_groups.task_variant_by_name.keys())
@@ -294,5 +309,6 @@ def get_demos_meta(*,
         'variant_groups': variant_groups,
         'env_metas': env_metas,
         'task_ids_and_demo_env_names': task_ids_and_demo_env_names,
+        'num_demo_sources': num_demo_sources,
     }
     return rv

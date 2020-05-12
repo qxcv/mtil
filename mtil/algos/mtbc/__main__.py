@@ -1,5 +1,6 @@
 import contextlib
 import multiprocessing as mp
+import itertools as it
 import os
 import readline  # noqa: F401
 import time
@@ -14,7 +15,8 @@ from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.utils.logging import logger
 import torch
 
-from mtil.algos.mtbc.mtbc import (copy_model_into_agent_eval,
+from mtil.algos.mtbc.mtbc import (MinBCWeightingModule,
+                                  copy_model_into_agent_eval,
                                   do_epoch_training_mt, eval_model,
                                   eval_model_st, get_latest_path, make_env_tag,
                                   saved_model_loader_ft, strip_mb_preproc_name,
@@ -90,11 +92,15 @@ def cli():
 @click.option("--snapshot-gap",
               default=10,
               help="how many evals to wait for before saving snapshot")
+@click.option("--min-bc/--no-min-bc",
+              default=False,
+              help="use the 'min BC' objective, where the policy is only "
+              "required to mimic the 'easiest' trajectory for each task")
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
           gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop,
           net_width_mul, net_use_bn, net_dropout, net_coord_conv,
-          net_attention, aug_mode):
+          net_attention, aug_mode, min_bc):
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
     # loading should be simplified by having a single class that can provide
@@ -135,6 +141,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         loader_mt = make_loader_mt(dataset_mt, batch_size)
         variant_groups = demos_metas_dict['variant_groups']
         env_metas = demos_metas_dict['env_metas']
+        num_demo_sources = demos_metas_dict['num_demo_sources']
         task_ids_and_demo_env_names = demos_metas_dict[
             'task_ids_and_demo_env_names']
         sampler_batch_B = batch_size
@@ -142,6 +149,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         sampler_batch_T = 5
         sampler, sampler_batch_B = make_mux_sampler(
             variant_groups=variant_groups,
+            num_demo_sources=num_demo_sources,
             env_metas=env_metas,
             use_gpu=use_gpu,
             batch_B=sampler_batch_B,
@@ -154,12 +162,21 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         exit_stack.callback(lambda: sampler.shutdown())
 
         model_mt = policy_ctor(**policy_kwargs).to(dev)
+        if min_bc:
+            num_tasks = len(task_ids_and_demo_env_names)
+            weight_mod = MinBCWeightingModule(num_tasks, num_demo_sources) \
+                .to(dev)
+            all_params = it.chain(model_mt.parameters(),
+                                  weight_mod.parameters())
+        else:
+            weight_mod = None
+            all_params = model_mt.parameters()
         # Adam mostly works fine, but in very loose informal tests it seems
         # like SGD had fewer weird failures where mean loss would jump up by a
         # factor of 2x for a period (?). (I don't think that was solely due to
         # high LR; probably an architectural issue.) opt_mt =
         # torch.optim.Adam(model_mt.parameters(), lr=3e-4)
-        opt_mt = torch.optim.SGD(model_mt.parameters(), lr=1e-3, momentum=0.1)
+        opt_mt = torch.optim.SGD(all_params, lr=1e-3, momentum=0.1)
 
         try:
             aug_opts = MILBenchAugmentations.PRESETS[aug_mode]
@@ -213,7 +230,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                 model_mt.train()
                 loss_ewma, losses, per_task_losses = do_epoch_training_mt(
                     loader_mt, model_mt, opt_mt, dev, passes_per_eval,
-                    aug_model)
+                    aug_model, weight_mod)
 
                 # TODO: record accuracy on a random subset of the train and
                 # validation sets (both in eval mode, not train mode)
