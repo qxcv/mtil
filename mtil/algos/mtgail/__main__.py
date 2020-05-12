@@ -193,11 +193,13 @@ def main(
     env_metas = demos_metas_dict['env_metas']
     task_ids_and_demo_env_names = demos_metas_dict[
         'task_ids_and_demo_env_names']
-    sampler, sampler_batch_B = make_mux_sampler(variant_groups=variant_groups,
-                                                env_metas=env_metas,
-                                                use_gpu=use_gpu,
-                                                batch_B=sampler_batch_B,
-                                                batch_T=sampler_batch_T)
+    sampler, sampler_batch_B = make_mux_sampler(
+        variant_groups=variant_groups,
+        env_metas=env_metas,
+        use_gpu=use_gpu,
+        num_demo_sources=0,  # not important for now
+        batch_B=sampler_batch_B,
+        batch_T=sampler_batch_T)
     ppo_agent, policy_ctor, policy_kwargs = make_agent_policy_mt(
         env_metas, task_ids_and_demo_env_names)
 

@@ -5,8 +5,49 @@
         <title>Sam's IL task survey</title>
 
         <!-- dependencies -->
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/4.7.6/handlebars.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js" integrity="sha256-9/aliU8dGd2tb6OSsuzixeV4y/faTqgFtohetphbbj0=" crossorigin="anonymous"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/4.7.6/handlebars.min.js" integrity="sha256-usTqAE1ywvdMtksWzdeWzD75MsfJN0h0U7y2NtZL3N0=" crossorigin="anonymous"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/garlic.js/1.4.2/garlic.min.js" integrity="sha256-nggjJQ4qtL4epDwy6JJGWNzZLwoYmbz6EFjXHOd77BQ=" crossorigin="anonymous"></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pure/2.0.0/pure-min.css" integrity="sha256-l45acBk+3Y/vTwZO9kYqSj/+A/fDpfAaCpJdofed7UY=" crossorigin="anonymous" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pure/2.0.0/grids-responsive.min.css" integrity="sha256-2T6MnJKQCZhqin/ytllDU9XXqq0NxZArSpySx0ctHJo=" crossorigin="anonymous" />
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        <!-- CSS -->
+        <style>
+         body {
+             font-family: sans-serif;
+             color: #333;
+             padding: 15px;
+         }
+
+         textarea {
+             font-family: sans-serif;
+         }
+
+         .task-card video, .task-card img {
+             display: block;
+             margin-left: auto;
+             margin-right: auto;
+             border: 2px solid #eee;
+         }
+
+         .task-card textarea {
+             margin-top: 5px;
+             display: block;
+             margin-left: auto;
+             margin-right: auto;
+             width: 80%;
+         }
+
+         .form-part {
+             margin-top: 40px;
+             margin-bottom: 30px;
+         }
+
+         #form-parts {
+             max-width: 1500px;
+         }
+        </style>
 
         <!-- script -->
         <script>
@@ -18,7 +59,6 @@
          }
 
          $(document).ready(function() {
-            console.log('hi');
              var form = $("#form-parts");
              var hbt = Handlebars.compile(hbTemplate);
              for (var i = 0; i < globalData.length; ++i) {
@@ -27,6 +67,29 @@
                  var nodes = jQuery.parseHTML(rendered);
                  form.append(nodes);
              }
+
+             function getFormData() {
+                 return btoa(JSON.stringify(form.serializeArray()));
+             }
+
+             var copy_field = $("#copy-out");
+             form.change(function() {
+                copy_field.val(getFormData());
+             });
+
+             var copy_btn = $("#copy-to-clipboard");
+             var old_text = copy_btn.val();
+             copy_btn.click(function() {
+                copy_field.val(getFormData());
+                copy_field.select();
+                document.execCommand("copy");
+                copy_btn.val("Done!");
+                window.setTimeout(function() {
+                    copy_btn.val(old_text);
+                }, 500);
+             });
+
+             form.garlic();
          });
         </script>
 
@@ -36,35 +99,134 @@
         <!-- HB template -->
          <script>
          var hbTemplate = (
-            "<div class='form-part'>" +
-                "<h2>Task {{task_num}}</h2>" +
-                "<div class='task-card'>" +
+            "<div class='form-part pure-g'>" +
+                "<div class='part-header pure-u-1'>" +
+                    "<h2>Task {{task_num}}</h2>" +
+                "</div>" +
+            "<div class='task-card pure-u-1 pure-u-sm-1-2 pure-u-lg-1-4'>" +
                     "<h3>Demonstration</h3>" +
-                    "<video autoplay loop controls width='{{res}}' height='{{res}}'>" +
+                    "<div><video playsinline muted autoplay loop controls width='{{res}}' height='{{res}}'>" +
                         "<source src='{{demo_video}}' type='video/mp4' />" +
-                    "</video>" +
-                    "<textarea rows='2' cols='40' placeholder='What does the robot do in this video?'></textarea>" +
+                    "</video></div>" +
+                    "<textarea rows='3' cols='30' placeholder='What goal is the robot trying to achieve in this task?' name='tasks:{{task_num}}:demo-desc'></textarea>" +
+                    "<input type=hidden name='tasks:{{task_num}}:env-name' value='{{env_name}}' />" +
                 "</div>" +
                 "{{#each test_images}}" +
-                    "<div class='task-card'>" +
+                    "<div class='task-card pure-u-1 pure-u-sm-1-2 pure-u-lg-1-4'>" +
                         "<h3>Test scenario #{{this.num}}</h3>" +
                         "<img src='{{this.path}}' width='{{res}}' height='{{res}}' alt='Test scenario #{{this.num}}' />" +
-                        "<textarea rows='2' cols='40' placeholder='What would the robot have to do in this situation to achieve the same goal?'></textarea>" +
+                        "<textarea rows='3' cols='30' name='tasks:{{this.task_num}}:eval-descs:{{this.num}}' placeholder='What would the robot have to do in this situation to achieve that same goal?'></textarea>" +
                     "</div>" +
                 "{{/each}}" +
-                "<div class='task-card'>" +
-                    "<h3>Overall task description</h3>" +
-                    "<textarea rows='2' cols='40' placeholder='What goal is the robot trying to achieve in all of these situations?'></textarea>" +
-                "</div>" +
             "</div>"
         );
         </script>
     </head>
     <body>
-        <h1>Sam's IL task survey</h1>
-        <p>(context goes here)</p>
+        <div id="explainer">
+            <h1>Sam's IL task survey</h1>
+            <p>
+                At the moment I'm working a benchmark suite to assess
+                generalisation in imitation learning.
 
-        <form id="form-parts" method="POST" action="">
+                It is a multi-task benchmark.
+
+                Each task takes place in a common &ldquo;universe&rdquo; in
+                which possible worlds can consists of zero or more movable
+                blocks, zero or more immovable &rdquo;goal regions&ldquo;, and a
+                robot that can move and push the blocks around.
+
+                To assess generalisation, each task is split into a
+                <em>demonstration variant</em>&mdash;a fixed initial state of
+                the world that the human demonstrator starts in when giving
+                demonstrations&mdash;and a set of <em>test variants</em> that
+                randomise some aspect of the world (e.g. block properties,
+                position of the robot, etc.).
+
+                The challenge for IL algorithms is to solve the test variants
+                given only human demonstrations from the demonstration variant.
+            </p>
+
+            <p>
+                I'd like to see how well real humans (you!) can infer the intent
+                behind the demonstrations I've collected for my benchmark suite.
+
+                To that end, I've created this form.
+
+                The form is split into six sections, with one section for each task
+                (I've given the tasks randomly-assigned numbers instead of
+                names).
+
+                Each section includes the following:
+            </p>
+
+            <ul>
+                <li>
+                    A looping <strong>demonstration</strong> video showing
+                    various ways that a human could guide the robot to achieve
+                    the goal of the task.
+                </li>
+                <li>
+                    Three <strong>test scenarios</strong>.
+
+                    These are just images of different initial states from which
+                    it should still be possible to complete the task.
+
+                    However, there are no demonstrations associated with them.
+                </li>
+            </ul>
+
+            <p>
+                Hence, for each task, I'd like you to do the following:
+            </p>
+
+            <ul>
+                <li>
+                    In the text box below the demonstration configuration,
+                    please write down what you think the abstract goal of the task
+                    is.
+
+                    This will generally be simple&mdash;something like
+                    &ldquo;robot should bar the foo&rdquo; or similar.
+                </li>
+
+                <li>
+                    In the text box below each test scenario, please write down
+                    what you think the robot would have to do to achieve the
+                    abstract goal of the task in the corresponding scenario.
+
+                    This description might be a bit more complicated, and will
+                    probably make reference to the specific objects present in
+                    the test scenario (e.g. &ldquo;move to quux, grab the
+                    frobbish bar, push it to baz&rdquo;).
+
+                    The purpose of these questions is just to make sure I
+                    understand concretely what you think the overarching goal of
+                    the task is.
+
+                    You can assume that it's possible to complete the task in
+                    all of the test scenarios I've included.
+                </li>
+            </ul>
+
+            <p>
+                In most cases your responses should only need to be 1-2
+                sentences, but you can write more if you want to.
+
+                If you feel a task is ambiguous, just use your best guess at
+                what the goal is (and maybe tell me that you think the task is
+                unfair, since that's useful info for me!).
+            </p>
+
+            <p>
+                Once you're done, follow the instructions at the bottom of this
+                page to send the results to me.
+
+                Thanks for your help!
+            </p>
+        </div>
+
+        <form id="form-parts" class="pure-form" method="POST" action="">
             <!-- <div class="form-part">
                  <h2>Task {{ task_num }}</h2>
 
@@ -82,5 +244,22 @@
                  <textarea rows="2" cols="40" placeholder="What goal is the robot trying to achieve in all of these situations?"></textarea>
                  </div> -->
         </form>
+
+        <div id="submission">
+            <h1>Submission</h1>
+            <p>
+                Almost done! Just copy the following text and send it via Slack
+                or <a href="mailto:sdt@berkeley.edu">email</a> to Sam. If you've
+                written descriptions but don't see a random jumble of letters in
+                the box below, then something is probably broken; just send a
+                screenshot of your responses to Sam instead.
+            </p>
+            <form class="pure-form" action="#">
+                <fieldset>
+                    <input id="copy-out" type="text" readonly />
+                    <input id="copy-to-clipboard" type="button" value="Copy to clipboard" />
+                </fieldset>
+            </form>
+        </div>
     </body>
 </html>

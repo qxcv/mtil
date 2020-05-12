@@ -10,6 +10,7 @@ from milbench.benchmarks import EnvName
 import numpy as np
 from rlpyt.utils.prog_bar import ProgBarCounter
 import torch
+from torch import nn
 import torch.nn.functional as F
 
 from mtil.models import FixedTaskModelWrapper
@@ -67,16 +68,64 @@ def copy_model_into_agent_eval(model, agent, prefix='model'):
     agent.model.eval()
 
 
-def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model):
+class MinBCWeightingModule(nn.Module):
+    """Module for computing min-BC loss weights."""
+    __constants__ = ['num_demo_sources', 'num_tasks']
+
+    def __init__(self, num_tasks, num_demo_sources):
+        super().__init__()
+        self.num_demo_sources = num_demo_sources
+        self.num_tasks = num_tasks
+        self.weight_logits = nn.Parameter(
+            # id 0 should never be used
+            torch.zeros(num_tasks, num_demo_sources + 1))
+        self.register_parameter('weight_logits', self.weight_logits)
+
+    def forward(self, task_ids, variant_ids, source_ids):
+        # perform a separate softmax for each task_id, then average uniformly
+        # over task IDs
+        # TODO: torch.jit() this once you know it works
+        orig_shape = task_ids.shape
+        task_ids = task_ids.flatten()
+        source_ids = source_ids.flatten()
+        result = torch.zeros_like(task_ids, dtype=torch.float)
+        max_id = torch.max(source_ids)
+        min_id = torch.min(source_ids)
+        assert min_id >= 1 and max_id <= self.num_demo_sources, \
+            (min_id, max_id, self.num_demo_sources)
+        for task_id in task_ids.unique():
+            selected_mask = task_ids == task_id
+            selected_sources = source_ids[selected_mask]
+            task_weights = self.weight_logits[task_id]
+            source_weights = task_weights[selected_sources]
+            # scaling by this target_weight ensures that each task counts
+            # equally
+            target_weight = selected_mask.float().mean()
+            final_weights = target_weight * F.softmax(source_weights, dim=0)
+            result[selected_mask] = final_weights
+        return result.reshape(orig_shape)
+
+
+def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model,
+                         min_bc_module):
     # @torch.jit.script
-    def do_loss_forward_back(obs_batch, acts_batch):
+    def do_loss_forward_back(obs_batch_obs, obs_batch_task, obs_batch_var,
+                             obs_batch_source, acts_batch):
         # we don't use the value output
-        logits_flat, _ = model(obs_batch.observation,
-                               task_ids=obs_batch.task_id)
+        logits_flat, _ = model(obs_batch_obs, task_ids=obs_batch_task)
         losses = F.cross_entropy(logits_flat,
                                  acts_batch.long(),
                                  reduction='none')
-        loss = losses.mean()
+        if min_bc_module is not None:
+            # weight using a model-dependent strategy
+            mbc_weights = min_bc_module(obs_batch_task, obs_batch_var,
+                                        obs_batch_source)
+            assert mbc_weights.shape == losses.shape, (mbc_weights.shape,
+                                                       losses.shape)
+            loss = (losses * mbc_weights).sum()
+        else:
+            # no weighting
+            loss = losses.mean()
         loss.backward()
         return losses.detach().cpu().numpy()
 
@@ -105,7 +154,11 @@ def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model):
 
             # compute loss & take opt step
             opt.zero_grad()
-            batch_losses = do_loss_forward_back(obs_batch, acts_batch)
+            batch_losses = do_loss_forward_back(obs_batch.observation,
+                                                obs_batch.task_id,
+                                                obs_batch.variant_id,
+                                                obs_batch.source_id,
+                                                acts_batch)
             opt.step()
 
             # for logging
@@ -213,7 +266,6 @@ def eval_model_st(sampler_st, itr, n_traj=10):
         scores.extend(s.item() for s in done_scores)
     # clip any extra rollouts
     return scores[:n_traj]
-
 
 
 def saved_model_loader_ft(state_dict_or_model_path, env_name):
