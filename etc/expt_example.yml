@@ -32,7 +32,7 @@ gail-trans:
   transfer-variants:
     - TestAll
 
-bc-attn:
+bc-min:
   algo: bc
   multi: false
   args:
