@@ -251,8 +251,8 @@ class MILBenchEnvMultiplexer:
         batch_size = min_batch_size
         remainder = min_batch_size % n_envs
         if remainder > 0:
-            batch_size += min_batch_size - remainder
-        assert batch_size % n_envs == 0
+            batch_size += n_envs - remainder
+            assert batch_size % n_envs == 0, (batch_size, n_envs, remainder)
         env_keys = sorted(self.variant_groups.task_variant_by_name.values())
         multiplier = int(np.round(batch_size / n_envs))
         batch_env_kwargs = sum([[dict(env_key=env_key)] * multiplier
