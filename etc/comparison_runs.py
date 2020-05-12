@@ -271,12 +271,15 @@ def run_check(*args):
               help='number of CPUs to use if starting new Ray instance')
 @click.option('--job-ngpus',
               default=0.3,
-              help='number of GPUs per job (can be fractional)')
+              help='number of GPUs per train job (can be fractional)')
+@click.option('--job-ngpus-eval',
+              default=0.45,
+              help='number of GPUs per eval job (can be fractional)')
 # @click.option('--job-ncpus',
 #               default=8,
 #               help='number of CPU cores to use for sampler in each job')
 @click.argument("spec")
-def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
+def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus, job_ngpus_eval):
     """Execute some experiments with Ray."""
     # spin up Ray cluster
     new_cluster = ray_connect is None
@@ -302,6 +305,7 @@ def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
         new_runs = generate_runs(**expt_spec, suffix=suffix)
         all_runs.extend(new_runs)
     call_remote = ray.remote(num_gpus=job_ngpus)(run_check)
+    call_remote_eval = ray.remote(num_gpus=job_ngpus_eval)(run_check)
 
     # first launch all train CMDs
     running_train_cmds = collections.OrderedDict()
@@ -324,7 +328,7 @@ def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
                 continue
 
             for test_cmd in run.test_cmds:
-                test_handle = call_remote.remote(test_cmd)
+                test_handle = call_remote_eval.remote(test_cmd)
                 running_test_cmds[test_handle] = run
 
         done_test_cmds, _ = ray.wait(list(running_test_cmds.keys()),
