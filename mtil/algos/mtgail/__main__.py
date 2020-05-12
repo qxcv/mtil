@@ -105,6 +105,9 @@ def cli():
 @click.option('--disc-all-frames/--no-disc-all-frames',
               default=True,
               help='whether discriminator gets full input frame stack')
+@click.option('--disc-net-attn/--no-disc-net-attn',
+              default=False,
+              help='use attention for discriminator')
 @click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
 @click.option('--ppo-gamma', default=0.95, help='PPO discount factor (gamma)')
 @click.option('--ppo-lambda', default=0.95, help='PPO GAE lamdba')
@@ -139,6 +142,7 @@ def main(
         omit_noop,
         disc_replay_mult,
         disc_aug,
+        disc_net_attn,
         transfer_variants,
         danger_debug_reward_weight,
         danger_override_env_name,
@@ -166,9 +170,9 @@ def main(
     n_workers = max(1, cpu_count // 2) if n_workers is None else n_workers
     assert n_workers <= cpu_count, \
         f"can't have n_workers={n_workers} > cpu_count={cpu_count}"
-    # TODO: figure out a better way of assigning work to cores (why can't my OS
-    # scheduler do it? Grumble grumble…).
-    # (XXX: I suspect this will set torch_num_threads incorrectly, which sucks)
+    # TODO: instead of using --n-workers, allow the user to supply a list
+    # of CPU cores to use for this process
+    # XXX: I suspect current solution will set torch_num_threads suboptimally
     affinity = dict(
         cuda_idx=gpu_idx if use_gpu else None,
         # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])
@@ -210,6 +214,9 @@ def main(
         act_dim=policy_kwargs['n_actions'],
         use_all_chans=disc_all_frames,
         use_actions=disc_use_act,
+        # can supply any argument that goes to MILBenchFeatureNetwork (e.g.
+        # dropout, use_bn, width, etc.)
+        attention=disc_net_attn,
     ).to(dev)
     reward_model_mt = RewardModel(discriminator_mt).to(dev)
     reward_evaluator_mt = RewardEvaluatorMT(

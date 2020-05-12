@@ -8,6 +8,7 @@ import os
 import subprocess
 
 import click
+from milbench.benchmarks import EnvName
 import numpy as np
 import ray
 import yaml
@@ -30,8 +31,20 @@ ENV_NAMES = {
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_GPUS = 4
+# for the final paper I'm just going to spend a few days running like 10 seeds
+# or something to get not-insane error bars
 DEFAULT_NUM_SEEDS = 3
 BASE_START_SEED = 3255779925
+
+
+def insert_variant(env_name, variant):
+    """Insert a variant name into an environment name. For instance,
+    `insert_variant("MoveToCorner-Demo-LoResStack-v0", "TestAll")` yields
+    `"MoveToCorner-TestAll-LoResStack-v0"`."""
+    parsed = EnvName(env_name)
+    new_name = (parsed.name_prefix + '-' + variant + parsed.env_name_suffix +
+                parsed.version_suffix)
+    return new_name
 
 
 def expand_patterns(*patterns):
@@ -96,28 +109,53 @@ def sample_core_range(num_cores):
 #   "itr_LATEST.pkl" used by mtbc.py.
 
 
-def gen_command_gail(demo_paths, run_name, seed, n_steps=None, **kwargs):
+def gen_command_gail(*,
+                     demo_paths,
+                     run_name,
+                     out_root,
+                     seed,
+                     n_steps=None,
+                     log_interval_steps=1e4,
+                     trans_env_names=(),
+                     **kwargs):
     extras = parse_unknown_args(**kwargs)
     cmd_parts = [
         *("xvfb-run -a python -m mtil.algos.mtgail").split(),
+        "--out-dir",
+        out_root,
         "--run-name",
         str(run_name),
         "--seed",
         str(seed),
         "--gpu-idx",
         "0",
+        "--log-interval-steps",
+        str(log_interval_steps),
         *extras,
     ]
     if n_steps is not None:
         assert n_steps == int(n_steps), n_steps
         cmd_parts.extend(['--total-n-steps', str(int(n_steps))])
+    for trans_variant in trans_env_names:
+        cmd_parts.extend(('--transfer-variant', trans_variant))
     cmd_parts.extend(demo_paths)
-    out_dir = f"./scratch/run_{run_name}/"
+    out_dir = os.path.join(out_root, f'run_{run_name}')
     return cmd_parts, out_dir
 
 
-def gen_command_bc(demo_paths, run_name, seed, **kwargs):
+def gen_command_bc(*,
+                   demo_paths,
+                   run_name,
+                   out_root,
+                   seed,
+                   eval_n_traj=5,
+                   snapshot_gap=1,
+                   trans_env_names=(),
+                   **kwargs):
     extras = parse_unknown_args(**kwargs)
+    assert len(trans_env_names) == 0, \
+        f"transfer envs not yet supported for BC, but got transfer env " \
+        f"names '{trans_env_names}'"
     cmd_parts = [
         "xvfb-run",
         "-a",
@@ -125,16 +163,22 @@ def gen_command_bc(demo_paths, run_name, seed, **kwargs):
         "-m",
         "mtil.algos.mtbc",
         "train",
+        "--out-dir",
+        out_root,
         "--run-name",
         run_name,
         "--seed",
         str(seed),
         "--gpu-idx",
         "0",
+        "--eval-n-traj",
+        str(eval_n_traj),
+        "--snapshot-gap",
+        str(snapshot_gap),
         *extras,
     ]
     cmd_parts.extend(demo_paths)
-    out_dir = f'./scratch/run_{run_name}'
+    out_dir = os.path.join(out_root, f'run_{run_name}')
     return cmd_parts, out_dir
 
 
@@ -187,6 +231,9 @@ def parse_expts_file(file_path):
         nseeds = run_dict.pop('nseeds', DEFAULT_NUM_SEEDS)
         assert isinstance(nseeds, int) and nseeds >= 1
 
+        trans_variants = run_dict.pop('transfer-variants', [])
+        assert isinstance(trans_variants, list)
+
         if len(run_dict) > 0:
             raise ValueError(
                 f"unrecognised options in expt spec '{run_name}': "
@@ -197,6 +244,7 @@ def parse_expts_file(file_path):
             'algo': algo,
             'generator': generator,
             'is_multi_task': is_multi_task,
+            'trans_variants': trans_variants,
             'args': args,
             'nseeds': nseeds,
         })
@@ -208,7 +256,7 @@ Run = collections.namedtuple('Run', ('train_cmd', 'test_cmds'))
 
 
 def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
-                  suffix):
+                  suffix, out_dir, trans_variants):
     runs = []
     seeds = generate_seeds(nseeds)
     for seed in seeds:
@@ -220,9 +268,16 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                 for expt in sorted(DEMO_PATH_PATTERNS.keys())
             ], [])
 
+            mt_trans_variants = [
+                insert_variant(ENV_NAMES[expt], variant)
+                for variant in trans_variants
+                for expt in sorted(DEMO_PATH_PATTERNS.keys())
+            ]
             mt_cmd, mt_dir = generator(demo_paths=demo_paths,
                                        run_name=mt_run_name,
                                        seed=seed,
+                                       out_root=out_dir,
+                                       trans_env_names=mt_trans_variants,
                                        **args)
 
             eval_cmds = []
@@ -238,10 +293,16 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                 st_run_name = f"{run_name}-{task}-{suffix}-s{seed}"
                 demo_paths = glob.glob(
                     os.path.expanduser(DEMO_PATH_PATTERNS[task]))
+                st_trans_variants = [
+                    insert_variant(ENV_NAMES[task], variant)
+                    for variant in trans_variants
+                ]
 
                 st_cmd, st_dir = generator(demo_paths=demo_paths,
                                            run_name=st_run_name,
                                            seed=seed,
+                                           out_root=out_dir,
+                                           trans_env_names=st_trans_variants,
                                            **args)
 
                 st_eval_cmd = make_eval_cmd(run_name, st_dir, task,
@@ -258,10 +319,33 @@ def run_check(*args):
     return subprocess.run(*args, check=True)
 
 
+class RunDummy:
+    def remote(self, *args, **kwargs):
+        """Simply prints command."""
+        sargs = ", ".join(map(repr, args))
+        if kwargs:
+            values = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+            if args:
+                skwargs = ", " + values
+            else:
+                skwargs = values
+        else:
+            skwargs = ""
+        print(f"subprocess.run({sargs}{skwargs})")
+        # object() can be hashed and compared for equality, so it acts like a
+        # Ray remote call handle when we put it in a dict
+        return object()
+
+
 @click.command()
 @click.option("--suffix",
               default=None,
               help="extra suffix to add to runs (defaults to timestamp)")
+@click.option("--out-dir", default="scratch")
+@click.option(
+    "--dry-run/--no-dry-run",
+    default=False,
+    help="only print experiment commands, without starting experiments")
 @click.option(
     '--ray-connect',
     default=None,
@@ -276,7 +360,7 @@ def run_check(*args):
 #               default=8,
 #               help='number of CPU cores to use for sampler in each job')
 @click.argument("spec")
-def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
+def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus, dry_run):
     """Execute some experiments with Ray."""
     # spin up Ray cluster
     new_cluster = ray_connect is None
@@ -288,7 +372,8 @@ def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
     else:
         if ray_ncpus is not None:
             ray_kwargs["num_cpus"] = ray_ncpus
-    ray.init(**ray_kwargs)
+    if not dry_run:
+        ray.init(**ray_kwargs)
 
     if suffix is None:
         # add 'T%H:%M' for hours and minutes
@@ -299,9 +384,12 @@ def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
     all_runs = []
     for expt_spec in expts_specs:
         # we have to run train_cmds first, then test_cmds second
-        new_runs = generate_runs(**expt_spec, suffix=suffix)
+        new_runs = generate_runs(**expt_spec, suffix=suffix, out_dir=out_dir)
         all_runs.extend(new_runs)
-    call_remote = ray.remote(num_gpus=job_ngpus)(run_check)
+    if dry_run:
+        call_remote = RunDummy()
+    else:
+        call_remote = ray.remote(num_gpus=job_ngpus)(run_check)
 
     # first launch all train CMDs
     running_train_cmds = collections.OrderedDict()
@@ -311,14 +399,19 @@ def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
 
     running_test_cmds = collections.OrderedDict()
     while running_train_cmds or running_test_cmds:
-        finished, _ = ray.wait(list(running_train_cmds.keys()), timeout=1.0)
+        if dry_run:
+            finished = list(running_train_cmds.keys())
+        else:
+            finished, _ = ray.wait(list(running_train_cmds.keys()),
+                                   timeout=1.0)
 
         for f_handle in finished:
             run = running_train_cmds[f_handle]
             del running_train_cmds[f_handle]
             try:
-                ret_value = ray.get(f_handle)
-                print(f"Run {run} returned value {ret_value.returncode}")
+                if not dry_run:
+                    ret_value = ray.get(f_handle)
+                    print(f"Run {run} returned value {ret_value.returncode}")
             except Exception as ex:
                 print(f"Got exception while popping run {run}: {ex}")
                 continue
@@ -327,14 +420,19 @@ def main(spec, suffix, ray_connect, ray_ncpus, job_ngpus):
                 test_handle = call_remote.remote(test_cmd)
                 running_test_cmds[test_handle] = run
 
-        done_test_cmds, _ = ray.wait(list(running_test_cmds.keys()),
-                                     timeout=1.0)
+        if dry_run:
+            done_test_cmds = list(running_test_cmds.keys())
+        else:
+            done_test_cmds, _ = ray.wait(list(running_test_cmds.keys()),
+                                         timeout=1.0)
         for d_handle in done_test_cmds:
             run = running_test_cmds[d_handle]
             del running_test_cmds[d_handle]
             try:
-                ret_value = ray.get(d_handle)
-                print(f"Test command on run {run} returned value {ret_value.returncode}")
+                if not dry_run:
+                    ret_value = ray.get(d_handle)
+                    print(f"Test command on run {run} returned value "
+                          f"{ret_value.returncode}")
             except Exception as ex:
                 print(f"Got exception from test cmd for run {run}: {ex}")
                 continue

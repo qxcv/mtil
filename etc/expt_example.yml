@@ -1,20 +1,50 @@
-st-gail-default:
-    algo: gail
-    # if multi=False then we automatically generate one experiment for every
-    # env; otherwise we have a single experiment that involves training on all
-    # envs
-    multi: false
-    args:
-      n_steps: null
+gail:
+  algo: gail
+  multi: false
 
-mt-gail-default:
-    algo: gail
-    multi: true
+bc:
+  algo: bc
+  multi: false
 
-st-bc-default:
-    algo: bc
-    multi: false
+gail-mt:
+  algo: gail
+  multi: true
 
-mt-bc-default:
-    algo: bc
-    multi: true
+bc-mt:
+  algo: bc
+  multi: true
+
+gail-attn:
+  algo: gail
+  multi: false
+  args:
+    disc_net_attn: True
+
+bc-attn:
+  algo: bc
+  multi: false
+  args:
+    net_attention: True
+
+gail-trans:
+  algo: gail
+  multi: false
+  transfer-variants:
+    - TestAll
+
+bc-attn:
+  algo: bc
+  multi: false
+  args:
+    min_bc: True
+
+# To make GAIL cheap, append this:
+#   args:
+#     total_n_steps: 4096
+#     snapshot_gap: 1
+
+# To make BC cheap, append this:
+#   args:
+#     epochs: 1
+#     eval_n_traj: 5
+#     passes_per_eval: 1

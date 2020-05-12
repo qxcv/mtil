@@ -46,7 +46,7 @@ def cli():
 @click.option("--gpu-idx", default=None, help="index of GPU to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
-@click.option("--epochs", default=25, help="epochs of training to perform")
+@click.option("--epochs", default=15, help="epochs of training to perform")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
 @click.option("--eval-n-traj",
               default=10,
@@ -87,10 +87,10 @@ def cli():
 # set this to some big value if training on perceptron or something
 @click.option(
     "--passes-per-eval",
-    default=20,
+    default=50,
     help="num training passes through full dataset between evaluations")
 @click.option("--snapshot-gap",
-              default=10,
+              default=1,
               help="how many evals to wait for before saving snapshot")
 @click.option("--min-bc/--no-min-bc",
               default=False,

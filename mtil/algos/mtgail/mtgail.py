@@ -72,14 +72,17 @@ class DiscrimTrainBuffer:
 
 
 class MILBenchDiscriminatorMT(nn.Module):
-    def __init__(self,
-                 task_ids_and_names,
-                 in_chans,
-                 act_dim,
-                 use_actions,
-                 use_all_chans,
-                 fc_dim=256,
-                 ActivationCls=torch.nn.ReLU):
+    def __init__(
+            self,
+            task_ids_and_names,
+            in_chans,
+            act_dim,
+            use_actions,
+            use_all_chans,
+            fc_dim=256,
+            ActivationCls=torch.nn.ReLU,
+            **feat_gen_kwargs,
+    ):
         super().__init__()
         self.task_ids_and_names = task_ids_and_names
         self.act_dim = act_dim
@@ -97,7 +100,8 @@ class MILBenchDiscriminatorMT(nn.Module):
         self.feature_extractor = MILBenchFeatureNetwork(
             in_chans=feat_in_chans,
             out_chans=fc_dim,
-            ActivationCls=ActivationCls)
+            ActivationCls=ActivationCls,
+            **feat_gen_kwargs)
         extra_dim = act_dim if use_actions else 0
         # the logit generator takes in both the image features and the
         # act_dim-dimensional action (probably just a one-hot vector)
