@@ -5,10 +5,10 @@ import datetime
 import glob
 import multiprocessing as mp
 import os
+import re
 import subprocess
 
 import click
-from milbench.benchmarks import EnvName
 import numpy as np
 import ray
 import yaml
@@ -35,6 +35,34 @@ NUM_GPUS = 4
 # or something to get not-insane error bars
 DEFAULT_NUM_SEEDS = 3
 BASE_START_SEED = 3255779925
+
+# FIXME: I had to vendor EnvName and _ENV_NAME_RE from MILBench because
+# directly importing from MILBench loads Pyglet, and Pyglet tries to make an
+# XOrg window on import (?!), which breaks on the server without xvfb-run :(
+_ENV_NAME_RE = re.compile(
+    r'^(?P<name_prefix>[^-]+)(?P<demo_test_spec>-(Demo|Test[^-]*))'
+    r'(?P<env_name_suffix>(-[^-]+)*)(?P<version_suffix>-v\d+)$')
+
+
+class EnvName:
+    """Vendored version of milbench.benchmarks.EnvName."""
+    def __init__(self, env_name):
+        match = _ENV_NAME_RE.match(env_name)
+        if match is None:
+            raise ValueError(
+                "env name '{env_name}' does not match _ENV_NAME_RE spec")
+        groups = match.groupdict()
+        self.env_name = env_name
+        self.name_prefix = groups['name_prefix']
+        self.demo_test_spec = groups['demo_test_spec']
+        self.env_name_suffix = groups['env_name_suffix']
+        self.version_suffix = groups['version_suffix']
+        self.demo_env_name = self.name_prefix + '-Demo' \
+            + self.env_name_suffix + self.version_suffix
+        self.is_test = self.demo_test_spec.startswith('-Test')
+        if not self.is_test:
+            assert self.demo_env_name == self.env_name, \
+                (self.demo_env_name, self.env_name)
 
 
 def insert_variant(env_name, variant):
