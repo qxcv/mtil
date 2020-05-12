@@ -66,11 +66,11 @@ class EnvName:
 
 
 def insert_variant(env_name, variant):
-    """Insert a variant name into an environment name. For instance,
-    `insert_variant("MoveToCorner-Demo-LoResStack-v0", "TestAll")` yields
-    `"MoveToCorner-TestAll-LoResStack-v0"`."""
+    """Insert a variant name into an environment name, omitting suffix. For
+    instance, `insert_variant("MoveToCorner-Demo-LoResStack-v0", "TestAll")`
+    yields `"MoveToCorner-TestAll-v0"`."""
     parsed = EnvName(env_name)
-    new_name = (parsed.name_prefix + '-' + variant + parsed.env_name_suffix +
+    new_name = (parsed.name_prefix + '-' + variant +
                 parsed.version_suffix)
     return new_name
 
