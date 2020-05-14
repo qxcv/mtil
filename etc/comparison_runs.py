@@ -35,6 +35,7 @@ NUM_GPUS = 4
 # or something to get not-insane error bars
 DEFAULT_NUM_SEEDS = 3
 BASE_START_SEED = 3255779925
+DEFAULT_NUM_TRAJ = 5
 
 # FIXME: I had to vendor EnvName and _ENV_NAME_RE from MILBench because
 # directly importing from MILBench loads Pyglet, and Pyglet tries to make an
@@ -70,8 +71,7 @@ def insert_variant(env_name, variant):
     instance, `insert_variant("MoveToCorner-Demo-LoResStack-v0", "TestAll")`
     yields `"MoveToCorner-TestAll-v0"`."""
     parsed = EnvName(env_name)
-    new_name = (parsed.name_prefix + '-' + variant +
-                parsed.version_suffix)
+    new_name = (parsed.name_prefix + '-' + variant + parsed.version_suffix)
     return new_name
 
 
@@ -259,8 +259,17 @@ def parse_expts_file(file_path):
         nseeds = run_dict.pop('nseeds', DEFAULT_NUM_SEEDS)
         assert isinstance(nseeds, int) and nseeds >= 1
 
+        ntraj = run_dict.pop('ntraj', DEFAULT_NUM_TRAJ)
+        assert isinstance(ntraj, int) and ntraj >= 1
+
         trans_variants = run_dict.pop('transfer-variants', [])
         assert isinstance(trans_variants, list)
+
+        env_subset = run_dict.pop('env-subset', list(ENV_NAMES.keys()))
+        assert isinstance(env_subset, list) \
+            and len(set(env_subset)) == len(env_subset)\
+            and set(env_subset) <= ENV_NAMES.keys()
+        env_subset = sorted(env_subset)
 
         if len(run_dict) > 0:
             raise ValueError(
@@ -274,27 +283,42 @@ def parse_expts_file(file_path):
             'is_multi_task': is_multi_task,
             'trans_variants': trans_variants,
             'args': args,
+            'ntraj': ntraj,
+            'env_subset': env_subset,
             'nseeds': nseeds,
         })
 
     return run_specs
 
 
+def select_subset(collection, n, rng):
+    """Use the given RNG to randomly select a subset of `n` items from
+    collection."""
+    nitems = len(collection)
+    assert nitems >= n, \
+        f"cannot select {n} items from collection of size {nitems}"
+    indices = rng.permutation(nitems)[:n]
+    return [collection[i] for i in indices]
+
+
 Run = collections.namedtuple('Run', ('train_cmd', 'test_cmds'))
 
 
 def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
-                  suffix, out_dir, trans_variants):
+                  suffix, out_dir, trans_variants, ntraj, env_subset):
     runs = []
     seeds = generate_seeds(nseeds)
     for seed in seeds:
+        rng = np.random.RandomState(seed)
         if is_multi_task:
             # one train command corresponding to N test commands
             mt_run_name = f"{run_name}-{suffix}-s{seed}"
-            demo_paths = sum([
-                glob.glob(os.path.expanduser(DEMO_PATH_PATTERNS[expt]))
-                for expt in sorted(DEMO_PATH_PATTERNS.keys())
-            ], [])
+            demo_paths = []
+            for expt in env_subset:
+                globbed = glob.glob(
+                    os.path.expanduser(DEMO_PATH_PATTERNS[expt]))
+                chosen = select_subset(globbed, ntraj, rng)
+                demo_paths.extend(chosen)
 
             mt_trans_variants = [
                 insert_variant(ENV_NAMES[expt], variant)
@@ -309,7 +333,8 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                                        **args)
 
             eval_cmds = []
-            for task_shorthand, env_name in sorted(ENV_NAMES.items()):
+            for task_shorthand in env_subset:
+                env_name = ENV_NAMES[task_shorthand]
                 mt_eval_cmd = make_eval_cmd(run_name, mt_dir, task_shorthand,
                                             env_name)
                 eval_cmds.append(mt_eval_cmd)
@@ -317,10 +342,11 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
 
         else:
             # one test command for each of N train commands
-            for task in sorted(DEMO_PATH_PATTERNS.keys()):
+            for task in sorted(env_subset):
                 st_run_name = f"{run_name}-{task}-{suffix}-s{seed}"
-                demo_paths = glob.glob(
+                demo_paths_all = glob.glob(
                     os.path.expanduser(DEMO_PATH_PATTERNS[task]))
+                demo_paths = select_subset(demo_paths_all, ntraj, rng)
                 st_trans_variants = [
                     insert_variant(ENV_NAMES[task], variant)
                     for variant in trans_variants
