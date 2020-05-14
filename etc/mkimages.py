@@ -116,7 +116,7 @@ def remove_dupes(old_frames, thresh=1e-3):
     for frame in old_frames[1:]:
         prev_frame = new_frames[-1]
         mean_diff = np.mean(np.abs(frame - prev_frame))
-        if mean_diff >= 1e-2:
+        if mean_diff >= thresh:
             new_frames.append(frame)
     result = np.stack([skimage.img_as_ubyte(f) for f in new_frames], axis=0)
     dropped = len(old_frames) - len(result)
@@ -180,6 +180,15 @@ def main(demos, dest):
         static_demo_anim_end = blend_frames(trunc_demo_frames_end, 2)
         write_image(static_demo_anim_out_start, static_demo_anim_start)
         write_image(static_demo_anim_out_end, static_demo_anim_end)
+
+        demo_montage_out = 'demo-mont-' + name_data.env_name.lower() + '.png'
+        skip = int(np.ceil(len(trunc_demo_frames) / 5.0))
+        indices = np.arange(0, len(trunc_demo_frames), skip)
+        indices[-1] = len(trunc_demo_frames) - 1  # always include last frame
+        sel_frames = trunc_demo_frames[indices]
+        # stack them horizontally
+        demo_montage = np.concatenate(sel_frames, axis=1)
+        write_image(demo_montage_out, demo_montage)
 
 
 if __name__ == '__main__':
