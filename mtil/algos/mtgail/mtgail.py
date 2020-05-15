@@ -1,5 +1,6 @@
 from collections import namedtuple
-import itertools
+import functools
+import itertools as it
 
 import numpy as np
 from rlpyt.runners.minibatch_rl import MinibatchRl
@@ -14,6 +15,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from mtil.demos import make_loader_mt
+from mtil.domain_transfer import BinaryDomainLossModule
 from mtil.models import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
                          MultiTaskAffineLayer)
 from mtil.utils.misc import tree_map
@@ -80,6 +82,7 @@ class MILBenchDiscriminatorMT(nn.Module):
             use_actions,
             use_all_chans,
             fc_dim=256,
+            act_rep_dim=32,
             ActivationCls=torch.nn.ReLU,
             **feat_gen_kwargs,
     ):
@@ -102,20 +105,29 @@ class MILBenchDiscriminatorMT(nn.Module):
             out_chans=fc_dim,
             ActivationCls=ActivationCls,
             **feat_gen_kwargs)
-        extra_dim = act_dim if use_actions else 0
+        if self.use_actions:
+            # action_preproc lets us learn a distinct embedding for each
+            # action. Having learnt embeddings instead of one-hot doesn't make
+            # increase model power, since the embedding later gets stuffed into
+            # a linear layer into a linear layer in both cases. However, it
+            # does let us apply a domain transfer loss to the embedding, which
+            # can force the model to be invariant to actions to some extent.
+            self.action_preproc = nn.Embedding(act_dim, act_rep_dim)
+            extra_dim = act_rep_dim
+        else:
+            extra_dim = 0
         # the logit generator takes in both the image features and the
-        # act_dim-dimensional action (probably just a one-hot vector)
+        # action encoding
         self.postproc = nn.Sequential(
             nn.Linear(fc_dim + extra_dim, fc_dim),
             ActivationCls(),
             # now: flat fc_dim-elem vector
         )
+        self.ret_feats_dim = fc_dim + extra_dim
         self.mt_logits = MultiTaskAffineLayer(fc_dim, 1,
                                               len(self.task_ids_and_names))
-        # TODO: remove self.logit_generator, replace with self.postproc and
-        # self.mt_logits
 
-    def forward(self, obs, act):
+    def forward(self, obs, act, return_feats=False):
         # this only handles images
         lead_dim, T, B, img_shape = infer_leading_dims(obs.observation, 3)
         lead_dim_act, T_act, B_act, act_shape = infer_leading_dims(act, 0)
@@ -134,10 +146,9 @@ class MILBenchDiscriminatorMT(nn.Module):
         obs_preproc = self.preproc(obs_reshape)
         obs_features = self.feature_extractor(obs_preproc)
         if self.use_actions:
-            acts_one_hot = to_onehot(act.view((T * B, *act_shape)),
-                                     self.act_dim,
-                                     dtype=obs_features.dtype)
-            all_features = torch.cat((obs_features, acts_one_hot), dim=1)
+            act_labels_flat = act.view((T * B, *act_shape))
+            action_features = self.action_preproc(act_labels_flat)
+            all_features = torch.cat((obs_features, action_features), dim=1)
         else:
             all_features = obs_features
         lin_features = self.postproc(all_features)
@@ -147,6 +158,8 @@ class MILBenchDiscriminatorMT(nn.Module):
 
         flat_logits = restore_leading_dims(flat_logits, lead_dim, T, B)
 
+        if return_feats:
+            return flat_logits, all_features
         return flat_logits
 
 
@@ -182,6 +195,9 @@ GAILInfo = namedtuple(
         'discFracExpertTrue',
         'discFracExpertPred',
         'discMeanLabelEnt',
+        # the next two are only filled in when we use a transfer loss
+        'xferLoss',
+        'xferAcc',
     ])
 
 
@@ -209,7 +225,8 @@ def _compute_gail_stats(disc_logits, is_real_labels):
 
 class GAILOptimiser:
     def __init__(self, dataset_mt, discrim_model, buffer_num_samples,
-                 batch_size, updates_per_itr, dev, aug_model, lr):
+                 batch_size, updates_per_itr, dev, aug_model, xfer_adv_weight,
+                 lr):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -219,9 +236,19 @@ class GAILOptimiser:
         self.dev = dev
         self.aug_model = aug_model
         self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
-        self.expert_batch_iter = itertools.chain.from_iterable(
-            itertools.repeat(self.expert_traj_loader))
-        self.opt = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.expert_batch_iter = it.chain.from_iterable(
+            it.repeat(self.expert_traj_loader))
+        self.xfer_adv_weight = xfer_adv_weight
+        if self.xfer_adv_weight > 0:
+            self.xfer_adv_model = BinaryDomainLossModule(
+                discrim_model.ret_feats_dim)
+            all_params = it.chain(self.model.parameters(),
+                                  self.xfer_adv_model.parameters())
+            self.xfer_replay_buffer = None
+        else:
+            self.xfer_adv_model = None
+            all_params = self.model.parameters()
+        self.opt = torch.optim.Adam(all_params, lr=lr)
         # we'll set this up on the first pass
         self.pol_replay_buffer = None
 
@@ -236,18 +263,38 @@ class GAILOptimiser:
         self.opt.load_state_dict(state_dict['disc_opt_state'])
 
     def optim_disc(self, itr, samples):
+        # TODO: refactor this method. Makes sense to split code that sets up
+        # the replay buffer(s) from code that sets up each batch (and from the
+        # code that computes losses and records metrics, etc.)
+
         # store new samples in replay buffer
         if self.pol_replay_buffer is None:
             self.pol_replay_buffer = DiscrimTrainBuffer(
                 self.buffer_num_samples, samples)
         # keep ONLY the demo env samples
         sample_variant_ids = samples.env.observation.variant_id
-        keep_mask = sample_variant_ids == 0
+        train_variant_mask = sample_variant_ids == 0
         # check that each batch index is "pure", in sense that e.g. all
         # elements at index k are always for the same task ID
-        assert (keep_mask[:1] == keep_mask).all(), keep_mask
-        filtered_samples = samples[:, keep_mask[0]]
+        assert (train_variant_mask[:1] == train_variant_mask).all(), \
+            train_variant_mask
+        filtered_samples = samples[:, train_variant_mask[0]]
         self.pol_replay_buffer.append_samples(filtered_samples)
+
+        if self.xfer_adv_model is not None:
+            # if we have an adversarial domain adaptation model for transfer
+            # learning, then we also keep samples that *don't* come from the
+            # train variant so we can use them for the transfer loss
+            if self.xfer_replay_buffer is None:
+                # second replay buffer for off-task samples
+                self.xfer_replay_buffer = DiscrimTrainBuffer(
+                    self.buffer_num_samples, samples)
+            xfer_variant_mask = ~train_variant_mask
+            assert torch.any(xfer_variant_mask), \
+                "xfer_adv_weight>0 supplied, but no xfer variants in batch?"
+            assert (xfer_variant_mask[:1] == xfer_variant_mask).all()
+            filtered_samples_xfer = samples[:, xfer_variant_mask[0]]
+            self.xfer_replay_buffer.append_samples(filtered_samples_xfer)
 
         # switch to train mode before taking any steps
         self.model.train()
@@ -260,33 +307,70 @@ class GAILOptimiser:
             expert_acts = expert_data['acts']
             # grep rlpyt source for "SamplesFromReplay" to see what fields
             # pol_replay_samples has
+            sub_batch_size = self.batch_size // 2
             pol_replay_samples = self.pol_replay_buffer.sample_batch(
-                self.batch_size // 2)
+                sub_batch_size)
             pol_replay_samples = torchify_buffer(pol_replay_samples)
             novice_obs = pol_replay_samples.all_observation
-            all_obs = tree_map(lambda *args: torch.cat(args, 0).to(self.dev),
-                               expert_obs, novice_obs)
+            if self.xfer_adv_model:
+                # add a bunch of of domain transfer samples
+                xfer_replay_samples = self.xfer_replay_buffer.sample_batch(
+                    sub_batch_size)
+                xfer_replay_samples = torchify_buffer(xfer_replay_samples)
+                xfer_replay_obs = xfer_replay_samples.all_observation
+                all_obs = tree_map(
+                    lambda *args: torch.cat(args, 0).to(self.dev), expert_obs,
+                    novice_obs, xfer_replay_obs)
+                all_acts = torch.cat([expert_acts.to(torch.int64),
+                                      pol_replay_samples.all_action,
+                                      xfer_replay_samples.all_action],
+                                     dim=0) \
+                    .to(self.dev)
+            else:
+                all_obs = tree_map(
+                    lambda *args: torch.cat(args, 0).to(self.dev), expert_obs,
+                    novice_obs)
+                all_acts = torch.cat([expert_acts.to(torch.int64),
+                                      pol_replay_samples.all_action],
+                                     dim=0) \
+                    .to(self.dev)
             if self.aug_model is not None:
                 # augmentations
-                all_obs = all_obs._replace(
-                    observation=self.aug_model(all_obs.observation))
-            all_acts = torch.cat([expert_acts.to(torch.int64),
-                                  pol_replay_samples.all_action],
-                                 dim=0) \
-                .to(self.dev)
+                aug_frames = self.aug_model(all_obs.observation)
+                all_obs = all_obs._replace(observation=aug_frames)
+            make_ones = functools.partial(torch.ones,
+                                          dtype=torch.float32,
+                                          device=self.dev)
+            make_zeros = functools.partial(torch.zeros,
+                                           dtype=torch.float32,
+                                           device=self.dev)
             is_real_label = torch.cat(
                 [
                     # expert samples
-                    torch.ones(self.batch_size // 2,
-                               dtype=torch.float32,
-                               device=self.dev),
+                    make_ones(sub_batch_size),
                     # novice samples
-                    torch.zeros(self.batch_size // 2,
-                                dtype=torch.float32,
-                                device=self.dev),
+                    make_zeros(sub_batch_size),
                 ],
                 dim=0)
-            logits = self.model(all_obs, all_acts)
+            if self.xfer_adv_model:
+                # apply domain transfer loss to the transfer samples, then
+                # remove them
+                logits_all, disc_feats_all = self.model(all_obs,
+                                                        all_acts,
+                                                        return_feats=True)
+                # cut the expert samples out of the discriminator transfer
+                # objective
+                disc_feats_xfer = disc_feats_all[sub_batch_size:]
+                xfer_labels = torch.cat(
+                    [make_ones(sub_batch_size),
+                     make_zeros(sub_batch_size)],
+                    dim=0)
+                xfer_loss, xfer_acc = self.xfer_adv_model(
+                    disc_feats_xfer, xfer_labels)
+                # cut the transfer env samples out of the logits
+                logits = logits_all[:-sub_batch_size]
+            else:
+                logits = self.model(all_obs, all_acts)
 
             # GAIL discriminator *objective* is E_fake[log D(s,a)] +
             # E_expert[log(1-D(s,a))]. You actually want to maximise this; in
@@ -309,15 +393,25 @@ class GAILOptimiser:
             #
             # - 1 is the *expert* label, and high = more expert-like
             # - 0 is the *novice* label, and low = less expert-like
-            loss = F.binary_cross_entropy_with_logits(logits,
-                                                      is_real_label,
-                                                      reduction='mean')
+            xent_loss = F.binary_cross_entropy_with_logits(logits,
+                                                           is_real_label,
+                                                           reduction='mean')
+            if self.xfer_adv_model:
+                loss = xent_loss + self.xfer_adv_weight * xfer_loss
+            else:
+                loss = xent_loss
             loss.backward()
             self.opt.step()
 
             # for logging; we'll average theses later
             info_dict = _compute_gail_stats(logits, is_real_label)
             info_dict['discMeanXEnt'] = loss.item()
+            if self.xfer_adv_model:
+                info_dict['xferLoss'] = xfer_loss.item()
+                info_dict['xferAcc'] = xfer_acc.item()
+            else:
+                info_dict['xferLoss'] = 0.0
+                info_dict['xferAcc'] = 0.0
             info_dicts.append(info_dict)
 
         # switch back to eval mode

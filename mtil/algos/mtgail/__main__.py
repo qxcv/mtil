@@ -7,6 +7,7 @@ that parts of the implementation can be pickled."""
 # the segfault still happens). Haven't had time to chase down.
 import multiprocessing as mp
 import os
+import readline  # noqa: F401
 
 import click
 from rlpyt.utils.logging import logger
@@ -121,6 +122,9 @@ def cli():
               default=[],
               multiple=True,
               help="name of transfer env for co-training (can be repeated)")
+@click.option("--transfer-disc-weight",
+              default=1e-1,
+              help='transfer loss weight for disc. (with --transfer-variant)')
 @click.argument("demos", nargs=-1, required=True)
 def main(
         demos,
@@ -144,6 +148,7 @@ def main(
         disc_aug,
         disc_net_attn,
         transfer_variants,
+        transfer_disc_weight,
         danger_debug_reward_weight,
         danger_override_env_name,
         # new sweep hyperparams:
@@ -259,7 +264,7 @@ def main(
         normalize_advantage=ppo_norm_adv,
     )
     if bc_loss:
-        # TODO: make this configurable
+        # TODO: make this batch size configurable
         ppo_loader_mt = make_loader_mt(
             dataset_mt, max(16, min(64, sampler_batch_T * sampler_batch_B)))
     else:
@@ -279,10 +284,11 @@ def main(
     else:
         print("Discriminator augmentations off")
         aug_model = None
+    if not transfer_variants and transfer_disc_weight:
+        print("No xfer variants supplied, setting xfer disc loss term to zero")
+        transfer_disc_weight = 0.0
     gail_optim = GAILOptimiser(
         dataset_mt=dataset_mt,
-        # TODO: update GAILOptimiser to use multi-task
-        # discrim
         discrim_model=discriminator_mt,
         buffer_num_samples=max(
             disc_batch_size,
@@ -291,7 +297,8 @@ def main(
         updates_per_itr=disc_up_per_iter,
         dev=dev,
         aug_model=aug_model,
-        lr=disc_lr)
+        lr=disc_lr,
+        xfer_adv_weight=transfer_disc_weight)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards
