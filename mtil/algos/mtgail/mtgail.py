@@ -241,7 +241,7 @@ class GAILOptimiser:
         self.xfer_adv_weight = xfer_adv_weight
         if self.xfer_adv_weight > 0:
             self.xfer_adv_model = BinaryDomainLossModule(
-                discrim_model.ret_feats_dim)
+                discrim_model.ret_feats_dim).to(self.dev)
             all_params = it.chain(self.model.parameters(),
                                   self.xfer_adv_model.parameters())
             self.xfer_replay_buffer = None
