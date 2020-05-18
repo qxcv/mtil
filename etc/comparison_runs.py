@@ -19,7 +19,7 @@ DEMO_PATH_PATTERNS = {
     'match-regions': '~/repos/milbench/demos-simplified/match-regions-2020-05-*/*.pkl.gz',  # noqa: E501
     'find-dupe': '~/repos/milbench/demos-simplified/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
     'cluster-colour': '~/repos/milbench/demos-simplified/cluster-colour-2020-05-*/*.pkl.gz',  # noqa: E501
-    'cluster-shape': '~/repos/milbench/demos-simplified/cluster-type-2020-05-*/*.pkl.gz',  # noqa: E501
+    'cluster-shape': '~/repos/milbench/demos-simplified/cluster-shape-2020-05-*/*.pkl.gz',  # noqa: E501
 }  # yapf: disable
 ENV_NAMES = {
     'move-to-corner': 'MoveToCorner-Demo-LoResStack-v0',
