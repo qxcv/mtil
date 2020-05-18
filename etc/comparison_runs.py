@@ -16,10 +16,10 @@ import yaml
 DEMO_PATH_PATTERNS = {
     'move-to-corner': '~/repos/milbench/demos-simplified/move-to-corner-2020-03-*/*.pkl.gz',  # noqa: E501
     'move-to-region': '~/repos/milbench/demos-simplified/move-to-region-2020-04-*/*.pkl.gz',  # noqa: E501
-    'match-regions': '~/repos/milbench/demos-simplified/match-regions-2020-03-*/*.pkl.gz',  # noqa: E501
-    'find-dupe': '~/repos/milbench/demos-simplified/find-dupe-2020-04-*/*.pkl.gz',  # noqa: E501
-    'cluster-colour': '~/repos/milbench/demos-simplified/cluster-colour-2020-03-*/*.pkl.gz',  # noqa: E501
-    'cluster-type': '~/repos/milbench/demos-simplified/cluster-type-2020-03-*/*.pkl.gz',  # noqa: E501
+    'match-regions': '~/repos/milbench/demos-simplified/match-regions-2020-05-*/*.pkl.gz',  # noqa: E501
+    'find-dupe': '~/repos/milbench/demos-simplified/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
+    'cluster-colour': '~/repos/milbench/demos-simplified/cluster-colour-2020-05-*/*.pkl.gz',  # noqa: E501
+    'cluster-shape': '~/repos/milbench/demos-simplified/cluster-type-2020-05-*/*.pkl.gz',  # noqa: E501
 }  # yapf: disable
 ENV_NAMES = {
     'move-to-corner': 'MoveToCorner-Demo-LoResStack-v0',
@@ -27,7 +27,7 @@ ENV_NAMES = {
     'match-regions': 'MatchRegions-Demo-LoResStack-v0',
     'find-dupe': 'FindDupe-Demo-LoResStack-v0',
     'cluster-colour': 'ClusterColour-Demo-LoResStack-v0',
-    'cluster-type': 'ClusterType-Demo-LoResStack-v0',
+    'cluster-shape': 'ClusterShape-Demo-LoResStack-v0',
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_GPUS = 4

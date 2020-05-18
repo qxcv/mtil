@@ -203,14 +203,16 @@ def load_demos_mt(demo_paths,
                   omit_noop=False):
     # load demo pickles from disk and sort into dict
     demo_dicts = load_demos(demo_paths)
-    num_demo_sources = len(demo_dicts)
     demo_trajs_by_env = {}
     source_ids_by_env = {}
+    num_demo_sources = 0
+    # FIXME: number the sources separately for each task
     for source_id, demo_dict in enumerate(demo_dicts, start=1):
         env_name = demo_dict['env_name']
         traj = demo_dict['trajectory']
         demo_trajs_by_env.setdefault(env_name, []).append(traj)
         source_ids_by_env.setdefault(env_name, []).append(source_id)
+        num_demo_sources += 1
 
     # if necessary, update the environment names to also include a preprocessor
     # name

@@ -125,14 +125,7 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         import milbench
         milbench.register_envs()
 
-        # TODO: maybe make this a class so that I don't have to pass around a
-        # zillion attrs and use ~5 lines just to load some demos?
-        # TODO: split out part of the dataset for validation. (IDK whether to
-        # do this trajectory-wise or what)
-        # dataset_mt, env_name_to_id, env_id_to_name, name_pairs \
-        #     = load_demos_mt(demos, add_preproc, omit_noop=omit_noop)
-        # loader_mt = make_loader_mt(dataset_mt, batch_size)
-
+        # TODO: split out part of the dataset for validation.
         demos_metas_dict = get_demos_meta(demo_paths=demos,
                                           omit_noop=omit_noop,
                                           transfer_variants=[],

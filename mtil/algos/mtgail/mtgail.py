@@ -8,8 +8,7 @@ from rlpyt.utils.buffer import (buffer_from_example, buffer_func,
                                 get_leading_dims, torchify_buffer)
 from rlpyt.utils.collections import namedarraytuple
 from rlpyt.utils.logging import logger
-from rlpyt.utils.tensor import (infer_leading_dims, restore_leading_dims,
-                                to_onehot)
+from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 from torch import nn
 import torch.nn.functional as F
