@@ -19,6 +19,8 @@ DEMO_FPS = 8
 OUT_RES = 192
 SWAP_FPS = 4
 RAND_FRAMES = 8
+# how many pixels of whitespace to insert between frames
+MONTAGE_SEP = 5
 
 
 def make_rand_frames(env_name):
@@ -150,6 +152,11 @@ def main(demos, dest):
             gif_out = 'anim-' + variant.lower() + '.gif'
             write_gif(gif_out, frames, SWAP_FPS)
 
+            for i, frame in enumerate(frames):
+                split_anim_out = 'split-anim-' + variant.lower() + '%02d' % i \
+                    + '.png'
+                write_image(split_anim_out, frame)
+
         # format of demo_obs: (T, H, W, C)
         print('  Writing demo')
         demo_frames = np.stack([
@@ -187,7 +194,13 @@ def main(demos, dest):
         indices[-1] = len(trunc_demo_frames) - 1  # always include last frame
         sel_frames = trunc_demo_frames[indices]
         # stack them horizontally
-        demo_montage = np.concatenate(sel_frames, axis=1)
+        sep_frame = np.full((sel_frames[0].shape[0], MONTAGE_SEP, 3),
+                            255,
+                            dtype='uint8')
+        # make little white separators between frames
+        seperators = [sep_frame] * len(sel_frames)
+        mont_parts = sum(zip(sel_frames, seperators), ())[:-1]
+        demo_montage = np.concatenate(mont_parts, axis=1)
         write_image(demo_montage_out, demo_montage)
 
 
