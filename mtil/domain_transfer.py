@@ -10,7 +10,11 @@ class ReverseGrad(torch.autograd.Function):
     reverses gradients on the backwards pass."""
     @staticmethod
     def forward(ctx, x):
-        return x
+        # return a copy of x to avoid whatever spooky optimisations Torch might
+        # be doing (this is purely defensive---I haven't needed it, but on the
+        # Torch forums there are people claiming issues with an older verion
+        # https://discuss.pytorch.org/t/solved-reverse-gradients-in-backward-pass/3589/7)
+        return x.clone()
 
     @staticmethod
     def backward(ctx, dydx):

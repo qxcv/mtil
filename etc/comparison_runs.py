@@ -20,6 +20,8 @@ DEMO_PATH_PATTERNS = {
     'find-dupe': '~/repos/milbench/demos-simplified/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
     'cluster-colour': '~/repos/milbench/demos-simplified/cluster-colour-2020-05-*/*.pkl.gz',  # noqa: E501
     'cluster-shape': '~/repos/milbench/demos-simplified/cluster-shape-2020-05-*/*.pkl.gz',  # noqa: E501
+    'fix-colour': '~/repos/milbench/demos-simplified/fix-colour-2020-05-*/*.pkl.gz',  # noqa: E501
+    'make-line': '~/repos/milbench/demos-simplified/make-line-2020-05-*/*.pkl.gz',  # noqa: E501
 }  # yapf: disable
 ENV_NAMES = {
     'move-to-corner': 'MoveToCorner-Demo-LoResStack-v0',
@@ -28,6 +30,8 @@ ENV_NAMES = {
     'find-dupe': 'FindDupe-Demo-LoResStack-v0',
     'cluster-colour': 'ClusterColour-Demo-LoResStack-v0',
     'cluster-shape': 'ClusterShape-Demo-LoResStack-v0',
+    'fix-colour': 'FixColour-Demo-LoResStack-v0',
+    'make-line': 'MakeLine-Demo-LoResStack-v0',
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_GPUS = 4
