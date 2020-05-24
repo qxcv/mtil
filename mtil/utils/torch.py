@@ -99,3 +99,17 @@ def mixup(*tensors, alpha=0.2):
         out_tensors.append(result)
 
     return tuple(out_tensors)
+
+
+def repeat_dataset(loader):
+    # equivalent to it.chain.from_iterable(it.repeat(loader)), except it will
+    # raise an error if the given iterable is empty (instead of cycling
+    # forever)
+    while True:
+        n_yielded = 0
+        for element in loader:
+            n_yielded += 1
+            yield element
+        if n_yielded == 0:
+            raise ValueError("there aren't actually any elements in the "
+                             "given loader...")

@@ -1,8 +1,6 @@
 """PPO variant that includes a behavioural cloning loss (call it 'PPO from
 demonstrations'). Doesn't work for multitask or recurrent policies as of
 2020-02-29 (making that work will require rewriting the data-loading code)."""
-import itertools
-
 from rlpyt.agents.base import AgentInputs
 from rlpyt.algos.pg.base import OptInfo
 from rlpyt.algos.pg.ppo import PPO, LossInputs
@@ -12,6 +10,7 @@ from rlpyt.utils.tensor import valid_mean
 import torch
 
 from mtil.reward_injection_wrappers import CustomRewardMixinPg
+from mtil.utils.torch import repeat_dataset
 
 
 class BehaviouralCloningPPOMixin:
@@ -19,8 +18,7 @@ class BehaviouralCloningPPOMixin:
         super().__init__(*args, **kwargs)
         self.bc_loss_coeff = bc_loss_coeff
         if bc_loss_coeff:
-            self.expert_batch_iter = itertools.chain.from_iterable(
-                itertools.repeat(expert_traj_loader))
+            self.expert_batch_iter = repeat_dataset(expert_traj_loader)
         else:
             self.expert_batch_iter = None
 

@@ -253,6 +253,8 @@ def make_loader_mt(dataset, batch_size):
     higher priority than the others). Assumes the given dataset is a
     TensorDataset produced by trajectories_to_dataset_mt."""
     task_ids = dataset.tensor_dict['obs'].task_id
+    assert len(task_ids) > 0 and batch_size > 0, \
+        f"either {len(task_ids)}=0 task IDs or {batch_size}=0 batch size"
     unique_ids, frequencies = torch.unique(task_ids,
                                            return_counts=True,
                                            sorted=True)
@@ -263,8 +265,12 @@ def make_loader_mt(dataset, batch_size):
     unique_weights = unique_weights / unique_weights.sum()
     weights = unique_weights[task_ids]
 
+    # even out the number of samples to be a multiple of batch size, always
+    n_samples = len(weights) + (-len(weights)) % batch_size
+    assert n_samples >= len(weights) and 0 == n_samples % batch_size, \
+        (batch_size, n_samples)
     weighted_sampler = data.WeightedRandomSampler(weights,
-                                                  len(weights),
+                                                  n_samples,
                                                   replacement=True)
     batch_sampler = data.BatchSampler(weighted_sampler,
                                       batch_size=batch_size,

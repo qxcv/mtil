@@ -18,6 +18,7 @@ from mtil.domain_transfer import BinaryDomainLossModule
 from mtil.models import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
                          MultiTaskAffineLayer)
 from mtil.utils.misc import tree_map
+from mtil.utils.torch import repeat_dataset
 
 DiscrimReplaySamples = namedarraytuple("DiscrimReplaySamples",
                                        ["all_observation", "all_action"])
@@ -235,8 +236,7 @@ class GAILOptimiser:
         self.dev = dev
         self.aug_model = aug_model
         self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
-        self.expert_batch_iter = it.chain.from_iterable(
-            it.repeat(self.expert_traj_loader))
+        self.expert_batch_iter = repeat_dataset(self.expert_traj_loader)
         self.xfer_adv_weight = xfer_adv_weight
         if self.xfer_adv_weight > 0:
             self.xfer_adv_model = BinaryDomainLossModule(

@@ -3,7 +3,6 @@ one "head" per environment. For now this only works with MILBench environments,
 so it assumes that all environments have the same input & output spaces."""
 
 import collections
-import itertools as it
 import os
 import re
 
@@ -16,6 +15,7 @@ import torch.nn.functional as F
 
 from mtil.models import FixedTaskModelWrapper
 from mtil.utils.misc import load_state_dict_or_model, tree_map
+from mtil.utils.torch import repeat_dataset
 
 LATEST_MARKER = 'LATEST'
 
@@ -138,7 +138,7 @@ def do_training_mt(loader, model, opt, dev, aug_model, min_bc_module,
     losses = []
     per_task_losses = collections.defaultdict(lambda: [])
     progress = ProgBarCounter(n_batches)
-    inf_batch_iter = it.chain.from_iterable(it.repeat(loader))
+    inf_batch_iter = repeat_dataset(loader)
     ctr_batch_iter = zip(range(1, n_batches), inf_batch_iter)
     for batches_done, loader_batch in ctr_batch_iter:
         # (task_ids_batch, obs_batch, acts_batch)
