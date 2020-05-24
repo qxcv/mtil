@@ -3,6 +3,7 @@ one "head" per environment. For now this only works with MILBench environments,
 so it assumes that all environments have the same input & output spaces."""
 
 import collections
+import itertools as it
 import os
 import re
 
@@ -106,8 +107,8 @@ class MinBCWeightingModule(nn.Module):
         return result.reshape(orig_shape)
 
 
-def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model,
-                         min_bc_module):
+def do_training_mt(loader, model, opt, dev, aug_model, min_bc_module,
+                   n_batches):
     # @torch.jit.script
     def do_loss_forward_back(obs_batch_obs, obs_batch_task, obs_batch_var,
                              obs_batch_source, acts_batch):
@@ -136,51 +137,50 @@ def do_epoch_training_mt(loader, model, opt, dev, passes_per_eval, aug_model,
     loss_ewma = None
     losses = []
     per_task_losses = collections.defaultdict(lambda: [])
-    progress = ProgBarCounter(len(loader) * passes_per_eval)
-    for pass_num in range(passes_per_eval):
-        for batches_done, loader_batch in enumerate(loader, start=1):
-            # (task_ids_batch, obs_batch, acts_batch)
-            # copy to GPU
-            obs_batch = loader_batch['obs']
-            acts_batch = loader_batch['acts']
-            # reminder: attributes are .observation, .task_id, .variant_id
-            obs_batch = tree_map(lambda t: t.to(dev), obs_batch)
-            acts_batch = acts_batch.to(dev)
+    progress = ProgBarCounter(n_batches)
+    inf_batch_iter = it.chain.from_iterable(it.repeat(loader))
+    ctr_batch_iter = zip(range(1, n_batches), inf_batch_iter)
+    for batches_done, loader_batch in ctr_batch_iter:
+        # (task_ids_batch, obs_batch, acts_batch)
+        # copy to GPU
+        obs_batch = loader_batch['obs']
+        acts_batch = loader_batch['acts']
+        # reminder: attributes are .observation, .task_id, .variant_id
+        obs_batch = tree_map(lambda t: t.to(dev), obs_batch)
+        acts_batch = acts_batch.to(dev)
 
-            if aug_model is not None:
-                # apply augmentations
-                obs_batch = obs_batch._replace(
-                    observation=aug_model(obs_batch.observation))
+        if aug_model is not None:
+            # apply augmentations
+            obs_batch = obs_batch._replace(
+                observation=aug_model(obs_batch.observation))
 
-            # compute loss & take opt step
-            opt.zero_grad()
-            batch_losses = do_loss_forward_back(obs_batch.observation,
-                                                obs_batch.task_id,
-                                                obs_batch.variant_id,
-                                                obs_batch.source_id,
-                                                acts_batch)
-            opt.step()
+        # compute loss & take opt step
+        opt.zero_grad()
+        batch_losses = do_loss_forward_back(obs_batch.observation,
+                                            obs_batch.task_id,
+                                            obs_batch.variant_id,
+                                            obs_batch.source_id, acts_batch)
+        opt.step()
 
-            # for logging
-            progress.update(batches_done + len(loader) * pass_num)
-            f_loss = np.mean(batch_losses)
-            loss_ewma = f_loss if loss_ewma is None \
-                else 0.9 * loss_ewma + 0.1 * f_loss
-            losses.append(f_loss)
+        # for logging
+        progress.update(batches_done)
+        f_loss = np.mean(batch_losses)
+        loss_ewma = f_loss if loss_ewma is None \
+            else 0.9 * loss_ewma + 0.1 * f_loss
+        losses.append(f_loss)
 
-            # also track separately for each task
-            tv_ids = torch.stack((obs_batch.task_id, obs_batch.variant_id),
-                                 axis=1)
-            np_tv_ids = tv_ids.cpu().numpy()
-            assert len(np_tv_ids.shape) == 2 and np_tv_ids.shape[1] == 2, \
-                np_tv_ids.shape
-            for tv_id in np.unique(np_tv_ids, axis=0):
-                tv_mask = np.all(np_tv_ids == tv_id[None], axis=-1)
-                rel_losses = batch_losses[tv_mask]
-                if len(rel_losses) > 0:
-                    task_id, variant_id = tv_id
-                    per_task_losses[(task_id, variant_id)] \
-                        .append(np.mean(rel_losses))
+        # also track separately for each task
+        tv_ids = torch.stack((obs_batch.task_id, obs_batch.variant_id), axis=1)
+        np_tv_ids = tv_ids.cpu().numpy()
+        assert len(np_tv_ids.shape) == 2 and np_tv_ids.shape[1] == 2, \
+            np_tv_ids.shape
+        for tv_id in np.unique(np_tv_ids, axis=0):
+            tv_mask = np.all(np_tv_ids == tv_id[None], axis=-1)
+            rel_losses = batch_losses[tv_mask]
+            if len(rel_losses) > 0:
+                task_id, variant_id = tv_id
+                per_task_losses[(task_id, variant_id)] \
+                    .append(np.mean(rel_losses))
 
     progress.stop()
 

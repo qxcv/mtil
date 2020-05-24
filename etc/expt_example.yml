@@ -45,6 +45,6 @@ bc-min:
 
 # To make BC cheap, append this:
 #   args:
-#     epochs: 1
+#     total_n_batches: 1
+#     eval_every_n_batches: 1
 #     eval_n_traj: 5
-#     passes_per_eval: 1

@@ -1,6 +1,6 @@
 import contextlib
-import multiprocessing as mp
 import itertools as it
+import multiprocessing as mp
 import os
 import readline  # noqa: F401
 import time
@@ -16,10 +16,10 @@ from rlpyt.utils.logging import logger
 import torch
 
 from mtil.algos.mtbc.mtbc import (MinBCWeightingModule,
-                                  copy_model_into_agent_eval,
-                                  do_epoch_training_mt, eval_model,
-                                  eval_model_st, get_latest_path, make_env_tag,
-                                  saved_model_loader_ft, strip_mb_preproc_name,
+                                  copy_model_into_agent_eval, do_training_mt,
+                                  eval_model, eval_model_st, get_latest_path,
+                                  make_env_tag, saved_model_loader_ft,
+                                  strip_mb_preproc_name,
                                   wrap_model_for_fixed_task)
 from mtil.augmentation import MILBenchAugmentations
 from mtil.demos import get_demos_meta, make_loader_mt
@@ -46,10 +46,15 @@ def cli():
 @click.option("--gpu-idx", default=None, help="index of GPU to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
-@click.option("--epochs", default=15, help="epochs of training to perform")
+@click.option("--total-n-batches",
+              default=10000,
+              help="total batches of training to perform")
+@click.option("--eval-every-n-batches",
+              default=1000,
+              help="total batches of training to perform")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
 @click.option("--eval-n-traj",
-              default=10,
+              default=5,
               help="number of trajectories to roll out on each evaluation")
 @click.option("--run-name",
               default=None,
@@ -85,10 +90,6 @@ def cli():
               default="trn",
               help="augmentations to use")
 # set this to some big value if training on perceptron or something
-@click.option(
-    "--passes-per-eval",
-    default=50,
-    help="num training passes through full dataset between evaluations")
 @click.option("--snapshot-gap",
               default=1,
               help="how many evals to wait for before saving snapshot")
@@ -97,15 +98,17 @@ def cli():
               help="use the 'min BC' objective, where the policy is only "
               "required to mimic the 'easiest' trajectory for each task")
 @click.argument("demos", nargs=-1, required=True)
-def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
-          gpu_idx, eval_n_traj, passes_per_eval, snapshot_gap, omit_noop,
-          net_width_mul, net_use_bn, net_dropout, net_coord_conv,
-          net_attention, aug_mode, min_bc):
+def train(demos, add_preproc, seed, batch_size, total_n_batches,
+          eval_every_n_batches, out_dir, run_name, gpu_idx, eval_n_traj,
+          snapshot_gap, omit_noop, net_width_mul, net_use_bn, net_dropout,
+          net_coord_conv, net_attention, aug_mode, min_bc):
+
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
     # loading should be simplified by having a single class that can provide
     # whatever form of data the current IL method needs, without having to do
     # unnecessary copies in memory. Maybe also just use Sacred, because YOLO.
+
     with contextlib.ExitStack() as exit_stack:
         # set up seeds & devices
         set_seeds(seed)
@@ -113,6 +116,8 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
         use_gpu = gpu_idx is not None and torch.cuda.is_available()
         dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
         print(f"Using device {dev}, seed {seed}")
+        # TODO: fix this so that I can assign CPUs manually from
+        # comparison_script.py (if I want to)
         cpu_count = mp.cpu_count()
         n_workers = max(1, cpu_count // 2)
         affinity = dict(
@@ -194,11 +199,11 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
             'net_attention': net_attention,
             'aug_mode': aug_mode,
             'seed': seed,
-            'eval_n_traj': eval_n_traj,
-            'passes_per_eval': passes_per_eval,
             'omit_noop': omit_noop,
             'batch_size': batch_size,
-            'epochs': epochs,
+            'eval_n_traj': eval_n_traj,
+            'eval_every_n_batches': eval_every_n_batches,
+            'total_n_batches': total_n_batches,
             'snapshot_gap': snapshot_gap,
             'add_preproc': add_preproc,
         }
@@ -214,16 +219,26 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                 os.path.join(logger.get_snapshot_dir(), 'full_model.pt'))
 
             # train for a while
-            for epoch in range(epochs):
-                dataset_len = len(dataset_mt)
-                print(
-                    f"Starting epoch {epoch+1}/{epochs} ({dataset_len} "
-                    f"batches * {passes_per_eval} passes between evaluations)")
-
+            n_batches_done = 0
+            n_rounds = int(np.ceil(total_n_batches / eval_every_n_batches))
+            rnd = 1
+            assert eval_every_n_batches > 0
+            while n_batches_done < total_n_batches:
+                batches_left_now = min(total_n_batches - n_batches_done,
+                                       eval_every_n_batches)
+                print(f"Done {n_batches_done}/{total_n_batches} "
+                      f"({n_batches_done/total_n_batches*100:.2f}%, "
+                      f"{rnd}/{n_rounds} rounds) batches; doing another "
+                      f"{batches_left_now}")
                 model_mt.train()
-                loss_ewma, losses, per_task_losses = do_epoch_training_mt(
-                    loader_mt, model_mt, opt_mt, dev, passes_per_eval,
-                    aug_model, weight_mod)
+                loss_ewma, losses, per_task_losses = do_training_mt(
+                    loader=loader_mt,
+                    model=model_mt,
+                    opt=opt_mt,
+                    dev=dev,
+                    aug_model=aug_model,
+                    min_bc_module=weight_mod,
+                    n_batches=batches_left_now)
 
                 # TODO: record accuracy on a random subset of the train and
                 # validation sets (both in eval mode, not train mode)
@@ -234,9 +249,11 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                 model_mt.eval()
 
                 copy_model_into_agent_eval(model_mt, sampler.agent)
-                scores_by_tv = eval_model(sampler,
-                                          itr=epoch,
-                                          n_traj=eval_n_traj)
+                scores_by_tv = eval_model(
+                    sampler,
+                    # shouldn't be any exploration
+                    itr=0,
+                    n_traj=eval_n_traj)
                 for (task_id, variant_id), scores in scores_by_tv.items():
                     tv_id = (task_id, variant_id)
                     env_name = variant_groups.env_name_by_task_variant[tv_id]
@@ -251,15 +268,16 @@ def train(demos, add_preproc, seed, batch_size, epochs, out_dir, run_name,
                     logger.record_tabular_misc_stat(*args)
 
                 # finish logging for this epoch
-                logger.record_tabular("Epoch", epoch)
+                logger.record_tabular("Round", rnd)
                 logger.record_tabular("LossEWMA", loss_ewma)
                 logger.record_tabular_misc_stat("Loss", losses)
                 logger.dump_tabular()
                 logger.save_itr_params(
-                    epoch, {
+                    rnd, {
                         'model_state': model_mt.state_dict(),
                         'opt_state': opt_mt.state_dict(),
                     })
+                rnd += 1
 
 
 @cli.command()
