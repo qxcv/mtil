@@ -47,7 +47,7 @@ def cli():
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
 @click.option("--total-n-batches",
-              default=10000,
+              default=15000,
               help="total batches of training to perform")
 @click.option("--eval-every-n-batches",
               default=1000,
