@@ -189,9 +189,11 @@ def main(demos, dest):
         write_image(static_demo_anim_out_end, static_demo_anim_end)
 
         demo_montage_out = 'demo-mont-' + name_data.env_name.lower() + '.png'
-        skip = int(np.ceil(len(trunc_demo_frames) / 5.0))
-        indices = np.arange(0, len(trunc_demo_frames), skip)
-        indices[-1] = len(trunc_demo_frames) - 1  # always include last frame
+        tgt_frames = 5
+        indices = np.linspace(0,
+                              len(trunc_demo_frames) - 1,
+                              tgt_frames)
+        indices = np.round(indices).astype('int64')
         sel_frames = trunc_demo_frames[indices]
         # stack them horizontally
         sep_frame = np.full((sel_frames[0].shape[0], MONTAGE_SEP, 3),
