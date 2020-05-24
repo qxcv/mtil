@@ -322,8 +322,12 @@ class MultiHeadPolicyNet(nn.Module):
                  dropout=None,
                  coord_conv=False,
                  attention=False,
+                 n_task_spec_layers=1,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
+        assert n_task_spec_layers >= 1, \
+            f"must have >=1 task specific layers; got {n_task_spec_layers} " \
+            f"layers instead"
         self.preproc = MILBenchPreprocLayer()
         fc_dim = 128 * width
         self.feature_extractor = MILBenchFeatureNetwork(
@@ -338,6 +342,7 @@ class MultiHeadPolicyNet(nn.Module):
         # TODO: Maybe I should scale the output width of the layer by the
         # number of tasks? IDK whether width of the network needs to increase
         # with task count.
+        # TODO: also decide whether these postproc_layers are even necessary :P
         postproc_layers = [nn.Linear(fc_dim, fc_dim), ActivationCls()]
         if dropout:
             # don't allow insane values of dropout by default
@@ -348,8 +353,17 @@ class MultiHeadPolicyNet(nn.Module):
         self.fc_postproc = nn.Sequential(*postproc_layers)
         # this produces both a single value output and a vector of policy
         # logits for each sample
-        self.mt_fc_layer = MultiTaskAffineLayer(fc_dim, n_actions + 1,
-                                                len(env_ids_and_names))
+        self.mt_fc_layers = []
+        for _ in range(n_task_spec_layers - 1):
+            self.mt_fc_layers.extend([
+                MultiTaskAffineLayer(fc_dim, fc_dim, len(env_ids_and_names)),
+                ActivationCls(),
+            ])
+        self.mt_fc_layers.append(
+            MultiTaskAffineLayer(fc_dim, n_actions + 1,
+                                 len(env_ids_and_names)))
+        for layer_num, layer in enumerate(self.mt_fc_layers):
+            self.add_module(f'mt_fc_layers_{layer_num}', layer)
 
         # save env IDs and names so that we know how to reconstruct, as well as
         # fc_dim and n_actions so that we can do reshaping
@@ -368,7 +382,15 @@ class MultiHeadPolicyNet(nn.Module):
         preproc = self.preproc(obs)
         features = self.feature_extractor(preproc)
         fc_features = self.fc_postproc(features)
-        logits_and_values = self.mt_fc_layer(fc_features, task_ids)
+        # apply multi-task layers
+        for mt_fc_layer in self.mt_fc_layers:
+            if isinstance(mt_fc_layer, MultiTaskAffineLayer):
+                fc_features = mt_fc_layer(fc_features, task_ids)
+            else:
+                fc_features = mt_fc_layer(fc_features)
+        logits_and_values = fc_features
+        assert logits_and_values.shape[-1] == self.n_actions + 1, \
+            (logits_and_values.shape, self.n_actions + 1)
         logits = logits_and_values[..., :-1]
         values = logits_and_values[..., -1]
 

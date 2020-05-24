@@ -76,6 +76,9 @@ def cli():
 @click.option("--net-attention/--no-net-attention",
               default=False,
               help="enable attention over final conv layer of policy net")
+@click.option("--net-task-spec-layers",
+              default=1,
+              help="number of task-specific FC layers in multitask policy net")
 @click.option("--aug-mode",
               type=click.Choice([
                   "none",
@@ -101,7 +104,8 @@ def cli():
 def train(demos, add_preproc, seed, batch_size, total_n_batches,
           eval_every_n_batches, out_dir, run_name, gpu_idx, eval_n_traj,
           snapshot_gap, omit_noop, net_width_mul, net_use_bn, net_dropout,
-          net_coord_conv, net_attention, aug_mode, min_bc):
+          net_coord_conv, net_attention, net_task_spec_layers, aug_mode,
+          min_bc):
 
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
@@ -154,6 +158,15 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
             batch_T=sampler_batch_T)
         agent, policy_ctor, policy_kwargs = make_agent_policy_mt(
             env_metas, task_ids_and_demo_env_names)
+        custom_policy_kwargs = {
+            'width': net_width_mul,
+            'use_bn': net_use_bn,
+            'dropout': net_dropout,
+            'coord_conv': net_coord_conv,
+            'attention': net_attention,
+            'n_task_spec_layers': net_task_spec_layers,
+        }
+        policy_kwargs.update(custom_policy_kwargs)
         sampler.initialize(agent=agent,
                            seed=np.random.randint(1 << 31),
                            affinity=affinity)
@@ -206,6 +219,7 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
             'total_n_batches': total_n_batches,
             'snapshot_gap': snapshot_gap,
             'add_preproc': add_preproc,
+            'net_task_spec_layers': net_task_spec_layers,
         }
         with make_logger_ctx(out_dir,
                              "mtbc",
@@ -277,7 +291,10 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
                         'model_state': model_mt.state_dict(),
                         'opt_state': opt_mt.state_dict(),
                     })
+
+                # advance ctrs
                 rnd += 1
+                n_batches_done += batches_left_now
 
 
 @cli.command()
