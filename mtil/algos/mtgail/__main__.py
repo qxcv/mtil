@@ -305,6 +305,7 @@ def main(
     runner = GAILMinibatchRl(
         seed=seed,
         gail_optim=gail_optim,
+        variant_groups=variant_groups,
         algo=ppo_algo,
         agent=ppo_agent,
         sampler=sampler,

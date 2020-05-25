@@ -57,6 +57,8 @@ class MILBenchTrajInfo(AttrDict):
         self.Score = 0
         self.Length = 0
         self.BaseReward = 0
+        self.Task = 0
+        self.Variant = 0
 
     def step(self, observation, action, reward, done, agent_info, env_info):
         self.Score += env_info.eval_score
@@ -64,6 +66,8 @@ class MILBenchTrajInfo(AttrDict):
         self.BaseReward += reward
 
     def terminate(self, observation):
+        self.Task = int(observation.task_id)
+        self.Variant = int(observation.variant_id)
         return self
 
 

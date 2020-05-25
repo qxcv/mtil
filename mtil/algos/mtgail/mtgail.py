@@ -1,7 +1,9 @@
-from collections import namedtuple
+from collections import defaultdict, namedtuple
+import copy
 import functools
 import itertools as it
 
+from milbench.benchmarks import EnvName
 import numpy as np
 from rlpyt.runners.minibatch_rl import MinibatchRl
 from rlpyt.utils.buffer import (buffer_from_example, buffer_func,
@@ -424,10 +426,36 @@ class GAILOptimiser:
         return opt_info
 
 
+def _simplify_env_name(env_name):
+    e = EnvName(env_name)
+    new_name = e.name_prefix.strip('-')
+    dt_spec = e.demo_test_spec.strip('-')
+    return new_name + dt_spec
+
+
+def _label_traj_infos(traj_infos, variant_groups):
+    new_traj_infos = []
+    for traj_info in traj_infos:
+        new_traj_info = copy.copy(traj_info)
+        task_id = traj_info["Task"]
+        variant_id = traj_info["Variant"]
+        env_name = variant_groups.env_name_by_task_variant[(task_id,
+                                                            variant_id)]
+        env_tag = _simplify_env_name(env_name)
+        # squish together task + variant, stripping "demo" and any suffix
+        variant_groups.name_by_prefix.keys()
+        new_traj_info["Score" + env_tag] = traj_info["Score"]
+        del new_traj_info["Score"], new_traj_info["Task"], \
+            new_traj_info["Variant"]
+        new_traj_infos.append(new_traj_info)
+    return new_traj_infos
+
+
 class GAILMinibatchRl(MinibatchRl):
-    def __init__(self, *, gail_optim, **kwargs):
+    def __init__(self, *, gail_optim, variant_groups, **kwargs):
         super().__init__(**kwargs)
         self.gail_optim = gail_optim
+        self.variant_groups = variant_groups
         self.joint_info_cls = None
 
     def train(self, cb_startup=None):
@@ -441,6 +469,9 @@ class GAILMinibatchRl(MinibatchRl):
                 self.agent.sample_mode(
                     itr)  # Might not be this agent sampling.
                 samples, traj_infos = self.sampler.obtain_samples(itr)
+                # label traj_infos with env IDs (this is specific to
+                # milbench/my multi-task thing)
+                traj_infos = _label_traj_infos(traj_infos, self.variant_groups)
                 self.agent.train_mode(itr)
                 opt_info = self.algo.optimize_agent(itr, samples)
 
@@ -483,3 +514,22 @@ class GAILMinibatchRl(MinibatchRl):
         # make sure that logger knows how to handle GAIL info tuples, too
         new_fields = GAILInfo._fields + self.algo._custom_logging_fields
         self._opt_infos.update({field: [] for field in new_fields})
+
+    def _log_infos(self, traj_infos=None):
+        """Customised version of _log_infos that supports having different keys
+        in each `TrajInfo`."""
+        if traj_infos is None:
+            traj_infos = self._traj_infos
+        if traj_infos:
+            values = defaultdict(lambda: [])
+            for traj_info in traj_infos:
+                for k, v in traj_info.items():
+                    if not k.startswith("_"):
+                        values[k].append(v)
+            for k, vs in values.items():
+                logger.record_tabular_misc_stat(k, vs)
+
+        if self._opt_infos:
+            for k, v in self._opt_infos.items():
+                logger.record_tabular_misc_stat(k, v)
+        self._opt_infos = {k: list() for k in self._opt_infos}  # (reset)
