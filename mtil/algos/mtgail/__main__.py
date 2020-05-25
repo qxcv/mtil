@@ -122,9 +122,17 @@ def cli():
               default=[],
               multiple=True,
               help="name of transfer env for co-training (can be repeated)")
+@click.option("--transfer-pol-batch-weight",
+              default=1.0,
+              help="weight of transfer envs relative to demo envs when making "
+              "trajectory sampler (>1 is more weight, <1 is less weight)")
 @click.option("--transfer-disc-weight",
               default=1e-1,
               help='transfer loss weight for disc. (with --transfer-variant)')
+@click.option("--transfer-disc-anneal/--no-transfer-disc-anneal",
+              default=False,
+              help="anneal disc transfer loss from 0 to whatever "
+              "--transfer-disc-weight is")
 @click.argument("demos", nargs=-1, required=True)
 def main(
         demos,
@@ -149,6 +157,8 @@ def main(
         disc_net_attn,
         transfer_variants,
         transfer_disc_weight,
+        transfer_disc_anneal,
+        transfer_pol_batch_weight,
         danger_debug_reward_weight,
         danger_override_env_name,
         # new sweep hyperparams:
@@ -202,8 +212,13 @@ def main(
     env_metas = demos_metas_dict['env_metas']
     task_ids_and_demo_env_names = demos_metas_dict[
         'task_ids_and_demo_env_names']
+    task_var_weights = {
+        (task, variant): 1.0 if variant == 0 else transfer_pol_batch_weight
+        for task, variant in variant_groups.env_name_by_task_variant
+    }
     sampler, sampler_batch_B = make_mux_sampler(
         variant_groups=variant_groups,
+        task_var_weights=task_var_weights,
         env_metas=env_metas,
         use_gpu=use_gpu,
         num_demo_sources=0,  # not important for now
@@ -287,18 +302,18 @@ def main(
     if not transfer_variants and transfer_disc_weight:
         print("No xfer variants supplied, setting xfer disc loss term to zero")
         transfer_disc_weight = 0.0
-    gail_optim = GAILOptimiser(
-        dataset_mt=dataset_mt,
-        discrim_model=discriminator_mt,
-        buffer_num_samples=max(
-            disc_batch_size,
-            disc_replay_mult * sampler_batch_T * sampler_batch_B),
-        batch_size=disc_batch_size,
-        updates_per_itr=disc_up_per_iter,
-        dev=dev,
-        aug_model=aug_model,
-        lr=disc_lr,
-        xfer_adv_weight=transfer_disc_weight)
+    gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
+                               discrim_model=discriminator_mt,
+                               buffer_num_samples=max(
+                                   disc_batch_size, disc_replay_mult *
+                                   sampler_batch_T * sampler_batch_B),
+                               batch_size=disc_batch_size,
+                               updates_per_itr=disc_up_per_iter,
+                               dev=dev,
+                               aug_model=aug_model,
+                               lr=disc_lr,
+                               xfer_adv_weight=transfer_disc_weight,
+                               xfer_adv_anneal=transfer_disc_anneal)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards

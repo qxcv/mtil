@@ -238,7 +238,7 @@ class MILBenchEnvMultiplexer:
         self.variant_groups = variant_groups
         self.num_demo_sources = num_demo_sources
 
-    def get_batch_size_and_kwargs(self, min_batch_size):
+    def get_batch_size_and_kwargs(self, min_batch_size, task_var_weights=None):
         """Compute an sampler batch size that is >= min_batch_size
         and divisible by the number of environments (so total number of unique
         (task, variant) pairs). Return both the batch size and a list of
@@ -247,18 +247,31 @@ class MILBenchEnvMultiplexer:
         assert self.variant_groups.num_tasks > 0 \
             and self.variant_groups.max_num_variants > 0 \
             and min_batch_size > 0
-        n_envs = len(self.variant_groups.task_variant_by_name)
-        batch_size = min_batch_size
-        remainder = min_batch_size % n_envs
-        if remainder > 0:
-            batch_size += n_envs - remainder
-            assert batch_size % n_envs == 0, (batch_size, n_envs, remainder)
-        env_keys = sorted(self.variant_groups.task_variant_by_name.values())
-        multiplier = int(np.round(batch_size / n_envs))
-        batch_env_kwargs = sum([[dict(env_key=env_key)] * multiplier
-                                for env_key in env_keys], [])
-        assert len(batch_env_kwargs) == batch_size
-        return batch_size, batch_env_kwargs
+        if task_var_weights is None:
+            task_var_weights = {(task, variant): 1.0
+                                for task, variant in
+                                self.variant_groups.env_name_by_task_variant}
+        else:
+            assert task_var_weights.keys() \
+                == self.variant_groups.env_name_by_task_variant.keys()
+            assert all(weight > 0 for weight in task_var_weights.values())
+
+        # normalise weights
+        tot_weight = sum(task_var_weights.values())
+        sub_batch_sizes = {
+            key: int(np.ceil(weight / tot_weight * min_batch_size))
+            for key, weight in task_var_weights.items()
+        }
+
+        env_keys_and_mults = sorted([
+            (task_and_var, sub_batch_sizes[task_and_var]) for task_and_var in
+            self.variant_groups.task_variant_by_name.values()
+        ])
+        total_batch_size = sum(mult for _, mult in env_keys_and_mults)
+        batch_env_kwargs = sum([[dict(env_key=env_key)] * mult
+                                for env_key, mult in env_keys_and_mults], [])
+        assert len(batch_env_kwargs) == total_batch_size
+        return total_batch_size, batch_env_kwargs
 
     def __call__(self, env_key):
         task_id, variant_id = env_key
@@ -297,11 +310,12 @@ class MuxTaskModelWrapper(AgentModelWrapper):
 
 
 def make_mux_sampler(*, variant_groups, num_demo_sources, env_metas, use_gpu,
-                     batch_B, batch_T):
+                     batch_B, batch_T, task_var_weights):
     print("Setting up environment multiplexer")
     # local copy of Gym env, w/ args to create equivalent env in the sampler
     env_mux = MILBenchEnvMultiplexer(variant_groups, num_demo_sources)
-    new_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(batch_B)
+    new_batch_B, env_ctor_kwargs = env_mux.get_batch_size_and_kwargs(
+        batch_B, task_var_weights=task_var_weights)
     all_env_names = sorted(variant_groups.task_variant_by_name.keys())
     if new_batch_B != batch_B:
         print(f"Increasing sampler batch size from '{batch_B}' to "

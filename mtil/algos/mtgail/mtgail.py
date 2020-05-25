@@ -226,9 +226,9 @@ def _compute_gail_stats(disc_logits, is_real_labels):
 
 
 class GAILOptimiser:
-    def __init__(self, dataset_mt, discrim_model, buffer_num_samples,
+    def __init__(self, *, dataset_mt, discrim_model, buffer_num_samples,
                  batch_size, updates_per_itr, dev, aug_model, xfer_adv_weight,
-                 lr):
+                 xfer_adv_anneal, lr):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -240,6 +240,8 @@ class GAILOptimiser:
         self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
         self.expert_batch_iter = repeat_dataset(self.expert_traj_loader)
         self.xfer_adv_weight = xfer_adv_weight
+        # if xfer_disc_anneal is True, then we anneal from 0 to 1
+        self.xfer_disc_anneal = xfer_adv_anneal
         if self.xfer_adv_weight > 0:
             self.xfer_adv_model = BinaryDomainLossModule(
                 discrim_model.ret_feats_dim).to(self.dev)
@@ -263,7 +265,7 @@ class GAILOptimiser:
         self.model.load_state_dict(state_dict['disc_model_state'])
         self.opt.load_state_dict(state_dict['disc_opt_state'])
 
-    def optim_disc(self, itr, samples):
+    def optim_disc(self, itr, n_itr, samples):
         # TODO: refactor this method. Makes sense to split code that sets up
         # the replay buffer(s) from code that sets up each batch (and from the
         # code that computes losses and records metrics, etc.)
@@ -398,7 +400,12 @@ class GAILOptimiser:
                                                            is_real_label,
                                                            reduction='mean')
             if self.xfer_adv_model:
-                loss = xent_loss + self.xfer_adv_weight * xfer_loss
+                if self.xfer_disc_anneal:
+                    progress = min(1, max(0, itr / float(n_itr)))
+                    xfer_adv_weight = progress * self.xfer_adv_weight
+                else:
+                    xfer_adv_weight = self.xfer_adv_weight
+                loss = xent_loss + xfer_adv_weight * xfer_loss
             else:
                 loss = xent_loss
             loss.backward()
@@ -476,7 +483,7 @@ class GAILMinibatchRl(MinibatchRl):
                 opt_info = self.algo.optimize_agent(itr, samples)
 
                 # run GAIL & combine its output with RL algorithm output
-                gail_info = self.gail_optim.optim_disc(itr, samples)
+                gail_info = self.gail_optim.optim_disc(itr, n_itr, samples)
                 if self.joint_info_cls is None:
                     self.joint_info_cls = namedtuple(
                         'joint_info_cls', gail_info._fields + opt_info._fields)
