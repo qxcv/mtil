@@ -57,11 +57,7 @@ class KorniaAugmentations(nn.Module):
             del byte_tensor
 
             # apply actual ops
-            from mtil.utils.torch import save_normalised_image_tensor
-            save_normalised_image_tensor(float_tensor, "batch_no_aug.png")
             float_tensor = self.kornia_ops(float_tensor)
-            save_normalised_image_tensor(float_tensor, "batch_with_aug.png")
-            assert False
 
             # convert back to byte
             out_tensor = torch.round(float_tensor * 255).byte()
