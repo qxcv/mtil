@@ -5,7 +5,7 @@ import kornia.augmentation as aug
 import torch
 from torch import nn
 
-from mtil.utils.colour import rgb_to_luv, luv_to_rgb, apply_luv_jitter
+from mtil.utils.colour import apply_lab_jitter
 
 
 class KorniaAugmentations(nn.Module):
@@ -83,8 +83,8 @@ class GaussianNoise(nn.Module):
         return out
 
 
-class CIELuvJitter(nn.Module):
-    """Apply 'jitter' in CIELuv colour space."""
+class CIELabJitter(nn.Module):
+    """Apply 'jitter' in CIELab colour space."""
     def __init__(self, max_lum_scale, max_uv_rads):
         super().__init__()
         self.max_lum_scale = max_lum_scale
@@ -92,10 +92,13 @@ class CIELuvJitter(nn.Module):
 
     def forward(self, x):
         # we take in stacked [N,C,H,W] images, where C=3*T. We then reshape
-        # into [N,T,C,H,W] like apply_luv_jitter expects.
-        raise NotImplementedError()
-
-        jittered = apply_luv_jitter(x, self.max_lum_scale, self.max_uv_rads)
+        # into [N,T,C,H,W] like apply_lab_jitter expects.
+        stack_depth = x.size(1) // 3
+        assert x.size(1) == 3 * stack_depth, x.shape
+        x_reshape = x.reshape(x.shape[:1] + (stack_depth, 3) + x.shape[2:])
+        jittered_reshape = apply_lab_jitter(x_reshape, self.max_lum_scale,
+                                            self.max_uv_rads)
+        jittered = jittered_reshape.reshape(x.shape)
         return jittered
 
 
@@ -120,7 +123,7 @@ class MILBenchAugmentations(KorniaAugmentations):
                  noise=False):
         transforms = []
         if colour_jitter:
-            transforms.append(CIELuvJitter(max_lum_scale=1.2, max_uv_rads=0.2))
+            transforms.append(CIELabJitter(max_lum_scale=1.2, max_uv_rads=0.2))
         if translate or rotate:
             transforms.append(
                 aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),

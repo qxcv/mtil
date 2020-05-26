@@ -1,6 +1,7 @@
 """This module contains optimised, JITted versions of Kornia's colour space
 conversion routines. Code is originally from Kornia; I've just updated it to be
 compatible with torch.jit etc."""
+from typing import List
 
 import torch
 
@@ -136,36 +137,42 @@ def generate_luv_jitter_mats(max_lum_scale, max_uv_rads, batch_size, device):
     return trans_mats
 
 
-# @torch.jit.script
-def apply_luv_jitter(images: torch.Tensor, max_lum_scale: float,
+@torch.jit.script
+def apply_lab_jitter(images: torch.Tensor, max_lum_scale: float,
                      max_uv_rads: float) -> torch.Tensor:
-    assert len(images.shape) == 4 and images.shape[1] == 3
+    """Apply random L*a*b* jitter to each element of a batch of images. The
+    `images` tensor should be of shape `[B,...,C,H,W]`, where the ellipsis
+    denotes extraneous dimensions which will not be transformed separately
+    (e.g. there might be a time axis present after the batch axis)."""
+
+    assert len(images.shape) >= 4 and images.shape[-3] == 3
     assert 2.0 >= max_lum_scale >= 1.0
     assert max_uv_rads >= 0.0
 
     batch_size = images.size(0)
     ndim = images.dim()
-    assert ndim >= 4
-    excess_dims = ndim - 4
+    lead_dims: List[int] = []
+    for i in range(ndim - 3):
+        lead_dims.append(i)
 
     rand_mats = generate_luv_jitter_mats(max_lum_scale, max_uv_rads,
                                          batch_size, images.device)
     lab_images = rgb_to_lab(images)
 
-    # FIXME: no, don't use the excess_dims thing; instead, flatten it all down!
-    # go from B*(excess dims)*C*H*W to B*(excess dims)*H*W*C*1 for the sake of broadcasting
-    lab_images_nhwc = lab_images.permute((0, 2, 3, 1))
+    # go from B*...*C*H*W to B*...*H*W*C*1 for the sake of broadcasting
+    lab_images_nhwc = lab_images.permute(lead_dims +
+                                         [ndim - 2, ndim - 1, ndim - 3])
     lab_images_bcast = lab_images_nhwc[..., None]
     # go from B*3*3 to B*(excess dims)*1*1*3*3 for the sake of broadcasting
-    rand_mats.reshape(rand_mats.shape[1:] + (1, ) * (excess_dims + 2) +
-                      rand_mats.shape[1:])
-    rand_mats_bcast = rand_mats[:, None, None, :]
+    rand_mats_bcast = rand_mats.reshape(rand_mats.shape[:1] + (1, ) *
+                                        (ndim - 4 + 2) + rand_mats.shape[1:])
     trans_lab_images_bcast = torch.matmul(rand_mats_bcast, lab_images_bcast)
     trans_lab_images_nhwc = torch.squeeze(trans_lab_images_bcast, dim=-1)
     # clip L channel so that it's in the right range
     trans_lab_images_nhwc[..., 0] = torch.clamp(trans_lab_images_nhwc[..., 0],
                                                 0.0, 100.0)
-    trans_lab_images = trans_lab_images_nhwc.permute((0, 3, 1, 2))
+    trans_lab_images = trans_lab_images_nhwc.permute(
+        lead_dims + [ndim - 1, ndim - 3, ndim - 2])
 
     # rgb_trans = torch.clamp(lab_to_rgb(trans_lab_images), 0, 1)
     rgb_trans = lab_to_rgb(trans_lab_images)
