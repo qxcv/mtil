@@ -95,10 +95,10 @@ class CIELabJitter(nn.Module):
         # into [N,T,C,H,W] like apply_lab_jitter expects.
         stack_depth = x.size(1) // 3
         assert x.size(1) == 3 * stack_depth, x.shape
-        x_reshape = x.reshape(x.shape[:1] + (stack_depth, 3) + x.shape[2:])
+        x_reshape = x.view(x.shape[:1] + (stack_depth, 3) + x.shape[2:])
         jittered_reshape = apply_lab_jitter(x_reshape, self.max_lum_scale,
                                             self.max_uv_rads)
-        jittered = jittered_reshape.reshape(x.shape)
+        jittered = jittered_reshape.view(x.shape)
         return jittered
 
 

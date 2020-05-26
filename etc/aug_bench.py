@@ -18,12 +18,14 @@ def gen_images(size=128, batch_size=32, depth=4, device='cuda'):
     return data_byte
 
 
-def time_augs(aug_kwargs, gen_kwargs, trials=100):
+def time_augs(aug_kwargs, gen_kwargs, trials=10):
     """Time repeated application of some augmentations"""
     images = gen_images(**gen_kwargs)
     augmentor = MILBenchAugmentations(**aug_kwargs)
     context = {'images': images, 'augmentor': augmentor}
-    statement = 'augmentor(images)'
+    # if I don't do .cpu().numpy() then the expression never gets evaluated
+    # (maybe a thing with lazy launching of CUDA kernels?)
+    statement = 'augmentor(images).cpu().numpy()'
     # warmup
     print("  Doing warmup runs")
     timeit.timeit(statement, globals=context, number=5)
@@ -44,6 +46,24 @@ def main():
             ('colour_jitter', False),
         ),
         (
+            ('translate', False),
+            ('rotate', True),
+            ('noise', False),
+            ('colour_jitter', False),
+        ),
+        (
+            ('translate', False),
+            ('rotate', False),
+            ('noise', False),
+            ('colour_jitter', True),
+        ),
+        (
+            ('translate', False),
+            ('rotate', False),
+            ('noise', True),
+            ('colour_jitter', False),
+        ),
+        (
             ('translate', True),
             ('rotate', True),
             ('noise', False),
@@ -55,13 +75,6 @@ def main():
             ('noise', True),
             ('colour_jitter', False),
         ),
-        # colour_jitter is just insanely expensive b/c of HSV conversions
-        # (
-        #     ('translate', True),
-        #     ('rotate', True),
-        #     ('noise', True),
-        #     ('colour_jitter', True),
-        # ),
     ]
     for aug_kwargs in all_aug_kwargs:
         kwargs_str = ", ".join(f"{k} = {v}" for k, v in aug_kwargs)
