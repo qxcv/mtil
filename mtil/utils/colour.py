@@ -1,7 +1,7 @@
 """This module contains optimised, JITted versions of Kornia's colour space
 conversion routines. Code is originally from Kornia; I've just updated it to be
 compatible with torch.jit etc."""
-from typing import List
+from typing import Tuple
 
 import torch
 
@@ -21,15 +21,15 @@ def _lab_f_inv(t: torch.Tensor) -> torch.Tensor:
 
 
 @torch.jit.script
-def rgb_to_lab(image: torch.Tensor) -> torch.Tensor:
+def rgb_to_lab(
+        r: torch.Tensor,
+        g: torch.Tensor,
+        b: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # originally copied from kornia.color.luv.rgb_to_luv, then adapted to
     # L*a*b*.
 
-    # Convert from Linear RGB to sRGB
-    r = image[..., 0, :, :]
-    g = image[..., 1, :, :]
-    b = image[..., 2, :, :]
-
+    # # Convert from Linear RGB to sRGB
     # rs = torch.where(r > 0.04045, torch.pow(((r + 0.055) / 1.055), 2.4),
     #                  r / 12.92)
     # gs = torch.where(g > 0.04045, torch.pow(((g + 0.055) / 1.055), 2.4),
@@ -59,15 +59,15 @@ def rgb_to_lab(image: torch.Tensor) -> torch.Tensor:
     a = 500 * (x_frac - y_frac)
     b = 200 * (y_frac - z_frac)
 
-    return torch.stack((L, a, b), dim=-3)
+    return L, a, b
 
 
 @torch.jit.script
-def lab_to_rgb(image: torch.Tensor) -> torch.Tensor:
-    L = image[..., 0, :, :]
-    a = image[..., 1, :, :]
-    b = image[..., 2, :, :]
-
+def lab_to_rgb(
+        L: torch.Tensor,
+        a: torch.Tensor,
+        b: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # convert from Lab to XYZ
     X_n = 0.950489
     Y_n = 1.000
@@ -97,7 +97,7 @@ def lab_to_rgb(image: torch.Tensor) -> torch.Tensor:
 
     # skipping linear RGB <-> sRGB conversion because I don't understand
     # whether/why it is necessary for my data
-    return torch.stack((rs, gs, bs), dim=-3)
+    return rs, gs, bs
 
 
 @torch.jit.script
@@ -112,32 +112,6 @@ def _unif_rand_range(lo, hi, size, device):
     return (hi - lo) * torch.rand((size, ), device=device) + lo
 
 
-@torch.jit.script
-def generate_luv_jitter_mats(max_lum_scale, max_uv_rads, batch_size, device):
-    # type: (float, float, int, Device) -> Tensor  # noqa: F821
-    uv_angles = _unif_rand_range(-max_uv_rads, max_uv_rads, batch_size, device)
-    lum_scale_factors = _unif_rand_range(1.0 / max_lum_scale, max_lum_scale,
-                                         batch_size, device)
-
-    # final transform matrices
-    trans_mats = torch.zeros((batch_size, 3, 3), device=device)
-
-    # we just do a random scaling on the L* channel
-    trans_mats[:, 0, 0] = lum_scale_factors
-
-    # we rotate the (a*,b*) channels together
-    # (2D CCW rotation matrix: [[cos, -sin], [sin, cos]])
-    sines = torch.sin(uv_angles)
-    cosines = torch.cos(uv_angles)
-    trans_mats[:, 1, 1] = cosines
-    trans_mats[:, 1, 2] = -sines
-    trans_mats[:, 2, 2] = cosines
-    trans_mats[:, 2, 1] = sines
-
-    return trans_mats
-
-
-@torch.jit.script
 def apply_lab_jitter(images: torch.Tensor, max_lum_scale: float,
                      max_uv_rads: float) -> torch.Tensor:
     """Apply random L*a*b* jitter to each element of a batch of images. The
@@ -149,33 +123,33 @@ def apply_lab_jitter(images: torch.Tensor, max_lum_scale: float,
     assert 2.0 >= max_lum_scale >= 1.0
     assert max_uv_rads >= 0.0
 
+    L, a, b = rgb_to_lab(images[..., 0, :, :], images[..., 1, :, :],
+                         images[..., 2, :, :])
+
+    # random transforms
     batch_size = images.size(0)
-    ndim = images.dim()
-    lead_dims: List[int] = []
-    for i in range(ndim - 3):
-        lead_dims.append(i)
-
-    rand_mats = generate_luv_jitter_mats(max_lum_scale, max_uv_rads,
+    ab_angles = _unif_rand_range(-max_uv_rads, max_uv_rads, batch_size,
+                                 images.device)
+    lum_scale_factors = _unif_rand_range(1.0 / max_lum_scale, max_lum_scale,
                                          batch_size, images.device)
-    lab_images = rgb_to_lab(images)
+    sines = torch.sin(ab_angles)
+    cosines = torch.cos(ab_angles)
 
-    # go from B*...*C*H*W to B*...*H*W*C*1 for the sake of broadcasting
-    lab_images_nhwc = lab_images.permute(lead_dims +
-                                         [ndim - 2, ndim - 1, ndim - 3])
-    lab_images_bcast = lab_images_nhwc[..., None]
-    # go from B*3*3 to B*(excess dims)*1*1*3*3 for the sake of broadcasting
-    rand_mats_bcast = rand_mats.reshape(rand_mats.shape[:1] + (1, ) *
-                                        (ndim - 4 + 2) + rand_mats.shape[1:])
-    trans_lab_images_bcast = torch.matmul(rand_mats_bcast, lab_images_bcast)
-    trans_lab_images_nhwc = torch.squeeze(trans_lab_images_bcast, dim=-1)
-    # clip L channel so that it's in the right range
-    trans_lab_images_nhwc[..., 0] = torch.clamp(trans_lab_images_nhwc[..., 0],
-                                                0.0, 100.0)
-    trans_lab_images = trans_lab_images_nhwc.permute(
-        lead_dims + [ndim - 1, ndim - 3, ndim - 2])
+    # resize transformations to take advantage of broadcasting
+    new_shape = (batch_size, ) + (1, ) * (a.ndim - 1)
+    sines = sines.view(new_shape)
+    cosines = cosines.view(new_shape)
+    lum_scale_factors = lum_scale_factors.view(new_shape)
 
-    # rgb_trans = torch.clamp(lab_to_rgb(trans_lab_images), 0, 1)
-    rgb_trans = lab_to_rgb(trans_lab_images)
+    # now apply the transformations
+    # (this is way faster than stacking and using torch.matmul())
+    trans_L = torch.clamp(L * lum_scale_factors, 0.0, 100.0)
+    trans_a = cosines * a - sines * b
+    trans_b = sines * a + cosines * b
+
+    trans_r, trans_g, trans_b = lab_to_rgb(trans_L, trans_a, trans_b)
+
+    rgb_trans = torch.stack((trans_r, trans_g, trans_b), dim=-3)
 
     # throw out colours that can't be expressed as RGB (this is probably not a
     # good way of doing it, but whatever)

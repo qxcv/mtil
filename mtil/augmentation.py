@@ -112,6 +112,7 @@ class MILBenchAugmentations(KorniaAugmentations):
         ('rot', ['rotate']),
         ('transrot', ['translate', 'rotate']),
         ('trn', ['translate', 'rotate', 'noise']),
+        ('trnc', ['translate', 'rotate', 'colour_jitter', 'noise']),
         ('noise', ['noise']),
         ('none', []),
     ])

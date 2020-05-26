@@ -75,6 +75,12 @@ def main():
             ('noise', True),
             ('colour_jitter', False),
         ),
+        (
+            ('translate', True),
+            ('rotate', True),
+            ('noise', True),
+            ('colour_jitter', True),
+        ),
     ]
     for aug_kwargs in all_aug_kwargs:
         kwargs_str = ", ".join(f"{k} = {v}" for k, v in aug_kwargs)
