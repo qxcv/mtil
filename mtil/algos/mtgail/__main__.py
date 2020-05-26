@@ -237,6 +237,8 @@ def main(
         # can supply any argument that goes to MILBenchFeatureNetwork (e.g.
         # dropout, use_bn, width, etc.)
         attention=disc_net_attn,
+        # TODO: should I be using batch norm here? Seems like it's probably a
+        # good idea. Maybe I can save on opt iterations that way.
     ).to(dev)
     reward_model_mt = RewardModel(discriminator_mt).to(dev)
     reward_evaluator_mt = RewardEvaluatorMT(
@@ -295,7 +297,8 @@ def main(
         print("Discriminator augmentations on")
         aug_model = MILBenchAugmentations(translate=True,
                                           rotate=True,
-                                          noise=True)
+                                          noise=True,
+                                          colour_jitter=True)
     else:
         print("Discriminator augmentations off")
         aug_model = None

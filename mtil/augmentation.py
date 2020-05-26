@@ -57,7 +57,11 @@ class KorniaAugmentations(nn.Module):
             del byte_tensor
 
             # apply actual ops
+            from mtil.utils.torch import save_normalised_image_tensor
+            save_normalised_image_tensor(float_tensor, "batch_no_aug.png")
             float_tensor = self.kornia_ops(float_tensor)
+            save_normalised_image_tensor(float_tensor, "batch_with_aug.png")
+            assert False
 
             # convert back to byte
             out_tensor = torch.round(float_tensor * 255).byte()
@@ -107,12 +111,11 @@ class MILBenchAugmentations(KorniaAugmentations):
     augmentations with sensible pre-set values."""
     PRESETS = collections.OrderedDict([
         ('all', ['colour_jitter', 'translate', 'rotate', 'noise']),
-        ('recol', ['colour_jitter']),
+        ('col', ['colour_jitter']),
         ('trans', ['translate']),
         ('rot', ['rotate']),
         ('transrot', ['translate', 'rotate']),
         ('trn', ['translate', 'rotate', 'noise']),
-        ('trnc', ['translate', 'rotate', 'colour_jitter', 'noise']),
         ('noise', ['noise']),
         ('none', []),
     ])
@@ -124,7 +127,8 @@ class MILBenchAugmentations(KorniaAugmentations):
                  noise=False):
         transforms = []
         if colour_jitter:
-            transforms.append(CIELabJitter(max_lum_scale=1.2, max_uv_rads=0.2))
+            transforms.append(CIELabJitter(max_lum_scale=1.03,
+                                           max_uv_rads=0.3))
         if translate or rotate:
             transforms.append(
                 aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),

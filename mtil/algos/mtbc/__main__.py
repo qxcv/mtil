@@ -82,7 +82,7 @@ def cli():
 @click.option("--aug-mode",
               type=click.Choice([
                   "none",
-                  "recol",
+                  "col",
                   "trans",
                   "rot",
                   "noise",
@@ -90,7 +90,7 @@ def cli():
                   "trn",
                   "all",
               ]),
-              default="trn",
+              default="all",
               help="augmentations to use")
 # set this to some big value if training on perceptron or something
 @click.option("--snapshot-gap",
@@ -155,7 +155,10 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
             env_metas=env_metas,
             use_gpu=use_gpu,
             batch_B=sampler_batch_B,
-            batch_T=sampler_batch_T)
+            batch_T=sampler_batch_T,
+            # TODO: instead of doing this, try sampling in proportion to length
+            # of horizon; that should get more samples from harder envs
+            task_var_weights=None)
         agent, policy_ctor, policy_kwargs = make_agent_policy_mt(
             env_metas, task_ids_and_demo_env_names)
         custom_policy_kwargs = {

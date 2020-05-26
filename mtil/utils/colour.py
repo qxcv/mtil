@@ -1,6 +1,6 @@
 """This module contains optimised, JITted versions of Kornia's colour space
-conversion routines. Code is originally from Kornia; I've just updated it to be
-compatible with torch.jit etc."""
+conversion routines. Code was originally from Kornia, although it's now
+somewhat disfigured."""
 from typing import Tuple
 
 import torch
