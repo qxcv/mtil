@@ -5,6 +5,8 @@ import kornia.augmentation as aug
 import torch
 from torch import nn
 
+from mtil.utils.colour import rgb_to_luv, luv_to_rgb, apply_luv_jitter
+
 
 class KorniaAugmentations(nn.Module):
     """Container for Kornia augmentations. It does something like this:
@@ -91,14 +93,30 @@ class UnstackWrapper(nn.Module):
 class GaussianNoise(nn.Module):
     """Apply zero-mean Gaussian noise with a given standard deviation to input
     tensor."""
-    def __init__(self, std):
+    def __init__(self, std: float):
         super().__init__()
         self.std = std
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = x + self.std * torch.randn_like(x)
         out.clamp_(0., 1.)
         return out
+
+
+class CIELuvJitter(nn.Module):
+    """Apply 'jitter' in CIELuv colour space."""
+    def __init__(self, max_lum_scale, max_uv_rads):
+        super().__init__()
+        self.max_lum_scale = max_lum_scale
+        self.max_uv_rads = max_uv_rads
+
+    def forward(self, x):
+        # we take in stacked [N,C,H,W] images, where C=3*T. We then reshape
+        # into [N,T,C,H,W] like apply_luv_jitter expects.
+        raise NotImplementedError()
+
+        jittered = apply_luv_jitter(x, self.max_lum_scale, self.max_uv_rads)
+        return jittered
 
 
 class MILBenchAugmentations(KorniaAugmentations):
@@ -122,12 +140,7 @@ class MILBenchAugmentations(KorniaAugmentations):
                  noise=False):
         transforms = []
         if colour_jitter:
-            transforms.append(
-                UnstackWrapper(
-                    aug.ColorJitter(brightness=0.05,
-                                    contrast=0.05,
-                                    saturation=0.05,
-                                    hue=0.01)))
+            transforms.append(CIELuvJitter(max_lum_scale=1.2, max_uv_rads=0.2))
         if translate or rotate:
             transforms.append(
                 aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),
@@ -138,5 +151,8 @@ class MILBenchAugmentations(KorniaAugmentations):
             # means there's a >99% chance that any given noise value will lie
             # in [-0.03,0.03]. I think any value <=0.03 will probably be
             # reasonable.
-            transforms.append(GaussianNoise(std=0.01))
+            noise_mod = GaussianNoise(std=0.01)
+            # JIT doesn't make it any faster (unsurprisingly)
+            # noise_mod = torch.jit.script(noise_mod)
+            transforms.append(noise_mod)
         super().__init__(*transforms)
