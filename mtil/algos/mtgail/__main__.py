@@ -87,9 +87,10 @@ def cli():
 @click.option("--omit-noop/--no-omit-noop",
               default=False,
               help="omit demonstration (s,a) pairs whenever a is a noop")
-@click.option("--disc-aug/--no-disc-aug",
-              default=True,
-              help="enable/disable discriminator input data augmentation")
+@click.option("--disc-aug",
+              default="all",
+              # TODO: add choices for this, like in mtbc/__main__.py
+              help="choose augmentation for discriminator")
 @click.option("--danger-debug-reward-weight",
               type=float,
               default=None,
@@ -109,6 +110,9 @@ def cli():
 @click.option('--disc-net-attn/--no-disc-net-attn',
               default=False,
               help='use attention for discriminator')
+@click.option('--disc-use-bn/--no-disc-use-bn',
+              default=True,
+              help='should discriminator use batch norm?')
 @click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
 @click.option('--ppo-gamma', default=0.95, help='PPO discount factor (gamma)')
 @click.option('--ppo-lambda', default=0.95, help='PPO GAE lamdba')
@@ -154,6 +158,7 @@ def main(
         omit_noop,
         disc_replay_mult,
         disc_aug,
+        disc_use_bn,
         disc_net_attn,
         transfer_variants,
         transfer_disc_weight,
@@ -237,8 +242,7 @@ def main(
         # can supply any argument that goes to MILBenchFeatureNetwork (e.g.
         # dropout, use_bn, width, etc.)
         attention=disc_net_attn,
-        # TODO: should I be using batch norm here? Seems like it's probably a
-        # good idea. Maybe I can save on opt iterations that way.
+        use_bn=disc_use_bn,
     ).to(dev)
     reward_model_mt = RewardModel(discriminator_mt).to(dev)
     reward_evaluator_mt = RewardEvaluatorMT(
@@ -293,14 +297,16 @@ def main(
     ppo_algo.set_reward_evaluator(reward_evaluator_mt)
 
     print("Setting up optimiser")
-    if disc_aug:
-        print("Discriminator augmentations on")
-        aug_model = MILBenchAugmentations(translate=True,
-                                          rotate=True,
-                                          noise=True,
-                                          colour_jitter=True)
+    try:
+        aug_opts = MILBenchAugmentations.PRESETS[disc_aug]
+    except KeyError:
+        raise ValueError(f"unsupported augmentation mode '{disc_aug}'")
+    if aug_opts:
+        print("Discriminator augmentations:", ", ".join(aug_opts))
+        aug_model = MILBenchAugmentations(**{k: True for k in aug_opts}) \
+            .to(dev)
     else:
-        print("Discriminator augmentations off")
+        print("No discriminator augmentations")
         aug_model = None
     if not transfer_variants and transfer_disc_weight:
         print("No xfer variants supplied, setting xfer disc loss term to zero")
