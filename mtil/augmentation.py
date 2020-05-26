@@ -70,26 +70,6 @@ class KorniaAugmentations(nn.Module):
         return out_tensor
 
 
-class UnstackWrapper(nn.Module):
-    """Wrapper layer for passing n-image RGB stacks to layers that only expect
-    batches of three-channel RGB layers. Takes in an [N,C,H,W] tensor, resizes
-    is to [N*C/3,3,H,W], passes that to given layer, then reshapes the result
-    back to [N,C',H,W]"""
-    def __init__(self, layer):
-        super().__init__()
-        self.layer = layer
-
-    def forward(self, x):
-        assert x.dim() == 4, x.shape
-        n, c, *rest = x.shape
-        assert c >= 0 and (c % 3) == 0, c
-        x_reshaped = x.reshape([n * c // 3, 3] + rest)
-        result_reshaped = self.layer(x_reshaped)
-        assert result_reshaped.shape[2:] == x.shape[2:]
-        result = result_reshaped.reshape(x.shape)
-        return result
-
-
 class GaussianNoise(nn.Module):
     """Apply zero-mean Gaussian noise with a given standard deviation to input
     tensor."""
