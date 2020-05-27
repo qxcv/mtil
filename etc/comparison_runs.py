@@ -118,19 +118,51 @@ def generate_seeds(nseeds, start_seed=BASE_START_SEED):
     return seeds.tolist()
 
 
-def sample_core_range(num_cores):
-    """Sample a contiguous block of random CPU cores.
+def generate_core_list(block_size):
+    """Sample a contiguous block of random CPU cores, and return core numbers
+    as a comma-separated string (for --cpu-list).
 
     (why contiguous? because default Linux/Intel core enumeration puts distinct
     physical cores on the same socket next to each other)"""
     ncpus = mp.cpu_count()
-    assert (num_cores % ncpus) == 0, \
-        f"number of CPUs ({ncpus}) is not divisible by number of cores " \
-        f"({num_cores}) for this job"
-    ngroups = num_cores // ncpus
+    assert (ncpus % block_size) == 0, \
+        f"number of CPUs ({ncpus}) is not divisible by number of cores per " \
+        f"job ({block_size})"
+    ngroups = ncpus // block_size
     group = np.random.randint(ngroups)
-    cores = list(range(group * num_cores, (group + 1) * num_cores))
-    return cores
+    core_iter = range(group * block_size, (group + 1) * block_size)
+    core_str = ",".join(map(str, core_iter))
+    return core_str
+
+
+# def make_tee_magic(out_root, run_name):
+#     full_out_dir = os.path.join(out_root, run_name)
+#     os.makedirs(full_out_dir)
+#     stdout_path = os.path.join(full_out_dir, 'stdout.log')
+#     stderr_path = os.path.join(full_out_dir, 'stderr.log')
+#     # bash witchcraft from
+#     # https://stackoverflow.com/questions/692000/how-do-i-write-stderr-to-a-file-while-using-tee-with-a-pipe
+#     magic = [
+#         '>',
+#         '>(',
+#         'tee',
+#         '-a',
+#         stdout_path,
+#         ')',
+#         '2>',
+#         '>(tee',
+#         '-a',
+#         stderr_path,
+#         '>&2)',
+#     ]
+#     return magic
+
+
+def rand_assign_cores(n_cores):
+    """Randomly assign a block of CPU cores."""
+    n_blocks = os.cpu_count() // n_cores
+    block_num = os.random.randint(n_blocks)
+    return np.arange(block_num * n_cores, (block_num + 1) * n_cores).tolist()
 
 
 # Signature for algorithms:
@@ -149,6 +181,7 @@ def gen_command_gail(*,
                      n_steps=None,
                      log_interval_steps=1e4,
                      trans_env_names=(),
+                     cpu_list,
                      **kwargs):
     extras = parse_unknown_args(**kwargs)
     cmd_parts = [
@@ -163,6 +196,8 @@ def gen_command_gail(*,
         "0",
         "--log-interval-steps",
         str(log_interval_steps),
+        "--cpu-list",
+        cpu_list,
         *extras,
     ]
     if n_steps is not None:
@@ -183,6 +218,7 @@ def gen_command_bc(*,
                    eval_n_traj=5,
                    snapshot_gap=1,
                    trans_env_names=(),
+                   cpu_list,
                    **kwargs):
     extras = parse_unknown_args(**kwargs)
     assert len(trans_env_names) == 0, \
@@ -207,6 +243,8 @@ def gen_command_bc(*,
         str(eval_n_traj),
         "--snapshot-gap",
         str(snapshot_gap),
+        "--cpu-list",
+        cpu_list,
         *extras,
     ]
     cmd_parts.extend(demo_paths)
@@ -214,7 +252,7 @@ def gen_command_bc(*,
     return cmd_parts, out_dir
 
 
-def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name):
+def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name, *, cpu_list):
     new_cmd = [
         "xvfb-run",
         "-a",
@@ -234,6 +272,8 @@ def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name):
         "100",
         "--gpu-idx",
         "0",
+        "--cpu-list",
+        cpu_list,
         "--load-latest",
         os.path.join(snap_dir, 'itr_LATEST.pkl'),
     ]
@@ -309,7 +349,8 @@ Run = collections.namedtuple('Run', ('train_cmd', 'test_cmds'))
 
 
 def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
-                  suffix, out_dir, trans_variants, ntraj, env_subset):
+                  suffix, out_dir, trans_variants, ntraj, env_subset,
+                  nworkers):
     runs = []
     seeds = generate_seeds(nseeds)
     for seed in seeds:
@@ -334,13 +375,18 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                                        seed=seed,
                                        out_root=out_dir,
                                        trans_env_names=mt_trans_variants,
+                                       cpu_list=generate_core_list(nworkers),
                                        **args)
 
             eval_cmds = []
             for task_shorthand in env_subset:
                 env_name = ENV_NAMES[task_shorthand]
-                mt_eval_cmd = make_eval_cmd(run_name, mt_dir, task_shorthand,
-                                            env_name)
+                mt_eval_cmd = make_eval_cmd(
+                    run_name,
+                    mt_dir,
+                    task_shorthand,
+                    env_name,
+                    cpu_list=generate_core_list(nworkers))
                 eval_cmds.append(mt_eval_cmd)
             runs.append(Run(mt_cmd, eval_cmds))
 
@@ -356,15 +402,21 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                     for variant in trans_variants
                 ]
 
-                st_cmd, st_dir = generator(demo_paths=demo_paths,
-                                           run_name=st_run_name,
-                                           seed=seed,
-                                           out_root=out_dir,
-                                           trans_env_names=st_trans_variants,
-                                           **args)
+                st_cmd, st_dir = generator(
+                    demo_paths=demo_paths,
+                    run_name=st_run_name,
+                    seed=seed,
+                    out_root=out_dir,
+                    trans_env_names=st_trans_variants,
+                    cpu_list=generate_core_list(nworkers),
+                    **args)
 
-                st_eval_cmd = make_eval_cmd(run_name, st_dir, task,
-                                            ENV_NAMES[task])
+                st_eval_cmd = make_eval_cmd(
+                    run_name,
+                    st_dir,
+                    task,
+                    ENV_NAMES[task],
+                    cpu_list=generate_core_list(nworkers))
                 runs.append(Run(st_cmd, [st_eval_cmd]))
 
     return runs
@@ -417,17 +469,24 @@ class RunDummy:
 @click.option('--job-ngpus-eval',
               default=0.45,
               help='number of GPUs per eval job (can be fractional)')
-# @click.option('--job-ncpus',
-#               default=8,
-#               help='number of CPU cores to use for sampler in each job')
+@click.option('--job-nworkers',
+              default=None,
+              help='number of CPU workers per job')
 @click.argument("spec")
 def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
-         job_ngpus_eval, dry_run):
+         job_ngpus_eval, job_nworkers, dry_run):
     """Execute some experiments with Ray."""
     # spin up Ray cluster
+    if job_nworkers is None:
+        job_nworkers = min(8, max(1, os.cpu_count() // 2))
+    assert os.cpu_count() % job_nworkers == 0, \
+        (os.cpu_count(), job_nworkers)
     new_cluster = ray_connect is None
     ray_kwargs = {}
     if not new_cluster:
+        assert job_nworkers is None, \
+            "the --job-nworkers option is only supported when spinning up a " \
+            "new Ray instance"
         ray_kwargs["redis_address"] = ray_connect
         assert ray_ncpus is None, \
             "can't provide --ray-ncpus and --ray-connect"
@@ -446,8 +505,12 @@ def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
     all_runs = []
     for expt_spec in expts_specs:
         # we have to run train_cmds first, then test_cmds second
-        new_runs = generate_runs(**expt_spec, suffix=suffix, out_dir=out_dir)
+        new_runs = generate_runs(**expt_spec,
+                                 suffix=suffix,
+                                 out_dir=out_dir,
+                                 nworkers=job_nworkers)
         all_runs.extend(new_runs)
+
     if dry_run:
         call_remote = RunDummy()
         call_remote_eval = RunDummy()
@@ -502,13 +565,6 @@ def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
                 continue
 
     print("Everything finished!")
-
-    # Q: what is the end result meant to be? What output do we want this to
-    # produce? It would be ideal if it produced a *huge* CSV with all the
-    # results it could possibly gather. After that I can break this code up
-    # into several scripts that can be run in sequence, so that I can still
-    # re-run later stages (in case of failure of modifications) while caching
-    # early-stage results.
 
 
 if __name__ == '__main__':

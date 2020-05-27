@@ -122,9 +122,10 @@ class MILBenchAugmentations(KorniaAugmentations):
                  rotate=False,
                  noise=False):
         transforms = []
+        # TODO: tune hyperparameters of the augmentations
         if colour_jitter:
-            transforms.append(CIELabJitter(max_lum_scale=1.03,
-                                           max_uv_rads=0.3))
+            transforms.append(CIELabJitter(max_lum_scale=1.01,
+                                           max_uv_rads=0.15))
         if translate or rotate:
             transforms.append(
                 aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),

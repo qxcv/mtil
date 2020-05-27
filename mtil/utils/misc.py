@@ -72,7 +72,7 @@ def sample_cpu_list(n_workers=None):
     """Pick `n_workers` CPU cores at random. If `n_workesr` is None, then this
     will return `cpu_count() / 2` workers."""
     if n_workers is None:
-        n_workers = max(1, os.cpu_count() // 2)
+        n_workers = min(8, max(1, os.cpu_count() // 2))
     cores = np.random.permutation(os.cpu_count())[:n_workers].tolist()
     return cores
 
