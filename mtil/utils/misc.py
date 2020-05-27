@@ -43,6 +43,40 @@ def sane_click_init(cli):
         raise
 
 
+class CPUListParamType(click.ParamType):
+    """Click parameter type for a comma-separted CPU list. e.g. '0,1,2,3,4,5,7'
+    or similar."""
+    name = 'cpulist'
+
+    def convert(self, value, param, ctx):
+        try:
+            core_ids = list(map(int, value.split(",")))
+        except (TypeError, ValueError):
+            self.fail(f"could not parse int list {value!r}", param, ctx)
+            return
+        sorted_core_ids = sorted(set(core_ids))
+        if len(sorted_core_ids) < len(core_ids):
+            self.fail(f"core ID list {value!r} contains duplicates", param,
+                      ctx)
+            return
+        ncpus = os.cpu_count()
+        for core_id in sorted_core_ids:
+            if core_id < 0 or core_id >= ncpus:
+                self.fail(f"core ID {core_id} out of range [0,{ncpus})", param,
+                          ctx)
+                return
+        return sorted_core_ids
+
+
+def sample_cpu_list(n_workers=None):
+    """Pick `n_workers` CPU cores at random. If `n_workesr` is None, then this
+    will return `cpu_count() / 2` workers."""
+    if n_workers is None:
+        n_workers = max(1, os.cpu_count() // 2)
+    cores = np.random.permutation(os.cpu_count())[:n_workers].tolist()
+    return cores
+
+
 class RunningMeanVarianceEWMA:
     """Running mean and variance. Intended for reward normalisation."""
     def __init__(self, shape, discount=0.98):

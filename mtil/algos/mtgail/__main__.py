@@ -20,8 +20,8 @@ from mtil.augmentation import MILBenchAugmentations
 from mtil.demos import get_demos_meta, make_loader_mt
 from mtil.reward_injection_wrappers import RewardEvaluatorMT
 from mtil.sample_mux import make_mux_sampler
-from mtil.utils.misc import (load_state_dict_or_model, sane_click_init,
-                             set_seeds)
+from mtil.utils.misc import (CPUListParamType, load_state_dict_or_model,
+                             sane_click_init, sample_cpu_list, set_seeds)
 from mtil.utils.rlpyt import make_agent_policy_mt, make_logger_ctx
 
 
@@ -37,10 +37,10 @@ def cli():
     type=str,
     help="add preprocessor to the demos and test env (default: 'LoResStack')")
 @click.option("--gpu-idx", default=0, help="index of GPU to use")
-@click.option("--n-workers",
+@click.option("--cpu-list",
               default=None,
-              type=int,
-              help="number of rollout workers")
+              type=CPUListParamType(),
+              help="comma-separated list of CPUs to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--out-dir", default="scratch", help="dir for snapshots/logs")
 @click.option(
@@ -151,7 +151,7 @@ def main(
         disc_up_per_iter,
         total_n_steps,
         log_interval_steps,
-        n_workers,
+        cpu_list,
         snapshot_gap,
         load_policy,
         bc_loss,
@@ -175,8 +175,7 @@ def main(
         ppo_lambda,
         ppo_ent,
         ppo_adv_clip,
-        ppo_norm_adv,
-):
+        ppo_norm_adv):
     # set up seeds & devices
     # TODO: also seed child envs, when rlpyt supports it
     set_seeds(seed)
@@ -186,18 +185,11 @@ def main(
     mp.set_start_method('spawn')
     use_gpu = gpu_idx is not None and torch.cuda.is_available()
     dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
-    cpu_count = mp.cpu_count()
-    n_workers = max(1, cpu_count // 2) if n_workers is None else n_workers
-    assert n_workers <= cpu_count, \
-        f"can't have n_workers={n_workers} > cpu_count={cpu_count}"
-    # TODO: instead of using --n-workers, allow the user to supply a list
-    # of CPU cores to use for this process
-    # XXX: I suspect current solution will set torch_num_threads suboptimally
-    affinity = dict(
-        cuda_idx=gpu_idx if use_gpu else None,
-        # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])
-        workers_cpus=list(range(n_workers)),
-    )
+    if cpu_list is None:
+        cpu_list = sample_cpu_list()
+    # FIXME: I suspect current solution will set torch_num_threads suboptimally
+    affinity = dict(cuda_idx=gpu_idx if use_gpu else None,
+                    workers_cpus=cpu_list)
     print(f"Using device {dev}, seed {seed}, affinity {affinity}")
 
     # register original envs

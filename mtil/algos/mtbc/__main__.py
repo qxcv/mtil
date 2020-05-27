@@ -24,8 +24,8 @@ from mtil.algos.mtbc.mtbc import (MinBCWeightingModule,
 from mtil.augmentation import MILBenchAugmentations
 from mtil.demos import get_demos_meta, make_loader_mt
 from mtil.sample_mux import make_mux_sampler
-from mtil.utils.misc import (load_state_dict_or_model, sane_click_init,
-                             set_seeds)
+from mtil.utils.misc import (CPUListParamType, load_state_dict_or_model,
+                             sample_cpu_list, sane_click_init, set_seeds)
 from mtil.utils.rlpyt import (MILBenchGymEnv, make_agent_policy_mt,
                               make_logger_ctx)
 
@@ -44,6 +44,10 @@ def cli():
     type=str,
     help="add preprocessor to the demos and test env (default: 'LoResStack')")
 @click.option("--gpu-idx", default=None, help="index of GPU to use")
+@click.option("--cpu-list",
+              default=None,
+              type=CPUListParamType(),
+              help="comma-separated list of CPUs to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
 @click.option("--total-n-batches",
@@ -102,10 +106,10 @@ def cli():
               "required to mimic the 'easiest' trajectory for each task")
 @click.argument("demos", nargs=-1, required=True)
 def train(demos, add_preproc, seed, batch_size, total_n_batches,
-          eval_every_n_batches, out_dir, run_name, gpu_idx, eval_n_traj,
-          snapshot_gap, omit_noop, net_width_mul, net_use_bn, net_dropout,
-          net_coord_conv, net_attention, net_task_spec_layers, aug_mode,
-          min_bc):
+          eval_every_n_batches, out_dir, run_name, gpu_idx, cpu_list,
+          eval_n_traj, snapshot_gap, omit_noop, net_width_mul, net_use_bn,
+          net_dropout, net_coord_conv, net_attention, net_task_spec_layers,
+          aug_mode, min_bc):
 
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
@@ -120,14 +124,11 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
         use_gpu = gpu_idx is not None and torch.cuda.is_available()
         dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
         print(f"Using device {dev}, seed {seed}")
-        # TODO: fix this so that I can assign CPUs manually from
-        # comparison_script.py (if I want to)
-        cpu_count = mp.cpu_count()
-        n_workers = max(1, cpu_count // 2)
+        if cpu_list is None:
+            cpu_list = sample_cpu_list()
         affinity = dict(
             cuda_idx=gpu_idx if use_gpu else None,
-            # workers_cpus=list(np.random.permutation(cpu_count)[:n_workers])
-            workers_cpus=list(range(n_workers)),
+            workers_cpus=cpu_list,
         )
 
         # register original envs
@@ -433,6 +434,10 @@ class MTBCEvalProtocol(EvaluationProtocol):
 #               default=False,
 #               help="should actions be sampled deterministically?")
 @click.option("--gpu-idx", default=None, help="index of GPU to use (if any)")
+@click.option("--cpu-list",
+              default=None,
+              type=CPUListParamType(),
+              help="comma-separated list of CPUs to use")
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--fps",
               default=None,
@@ -462,8 +467,8 @@ class MTBCEvalProtocol(EvaluationProtocol):
               "basename with the highest integer that yields a valid path")
 @click.argument('state_dict_or_model_path')
 def testall(state_dict_or_model_path, env_name, seed, fps, write_latex,
-            latex_alg_name, n_rollouts, run_id, write_csv, gpu_idx, batch_size,
-            load_latest):
+            latex_alg_name, n_rollouts, run_id, write_csv, gpu_idx, cpu_list,
+            batch_size, load_latest):
     """Run quantitative evaluation on all test variants of a given
     environment."""
     # TODO: is there some way of factoring this init code out? Maybe put into
@@ -477,10 +482,10 @@ def testall(state_dict_or_model_path, env_name, seed, fps, write_latex,
     use_gpu = gpu_idx is not None and torch.cuda.is_available()
     dev = torch.device(["cpu", f"cuda:{gpu_idx}"][use_gpu])
     print(f"Using device {dev}, seed {seed}")
-    cpu_count = mp.cpu_count()
-    n_workers = max(1, cpu_count // 2)
+    if cpu_list is None:
+        cpu_list = sample_cpu_list()
     affinity = dict(cuda_idx=gpu_idx if use_gpu else None,
-                    workers_cpus=list(range(n_workers)))
+                    workers_cpus=cpu_list)
 
     if load_latest:
         state_dict_or_model_path = get_latest_path(state_dict_or_model_path)
