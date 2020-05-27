@@ -35,11 +35,10 @@ ENV_NAMES = {
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_GPUS = 4
-# for the final paper I'm just going to spend a few days running like 10 seeds
-# or something to get not-insane error bars
-DEFAULT_NUM_SEEDS = 3
+DEFAULT_NUM_SEEDS = 5
 BASE_START_SEED = 3255779925
-DEFAULT_NUM_TRAJ = 5
+# default number of trajectories for training; can go up to 25
+DEFAULT_NUM_TRAJ = 10
 
 # FIXME: I had to vendor EnvName and _ENV_NAME_RE from MILBench because
 # directly importing from MILBench loads Pyglet, and Pyglet tries to make an

@@ -1,0 +1,103 @@
+# Going to keep this file updated with the *full* set of experiments I'm running
+# for the paper.
+
+
+### BC METHODS
+
+# Single-task (+ ablations)
+
+bc-mt:
+  algo: bc
+  multi: true
+  args:
+    eval_n_traj: 1
+
+bc-st:
+  algo: bc
+  multi: false
+  args:
+    eval_n_traj: 1
+
+bc-mt-aug-no-trans:
+  algo: bc
+  multi: true
+  args:
+    eval_n_traj: 1
+    aug_mode: cn
+
+bc-mt-aug-no-col:
+  algo: bc
+  multi: true
+  args:
+    eval_n_traj: 1
+    aug_mode: trn
+
+bc-mt-aug-none:
+  algo: bc
+  multi: true
+  args:
+    eval_n_traj: 1
+    aug_mode: none
+
+bc-st-aug-no-trans:
+  algo: bc
+  multi: false
+  args:
+    eval_n_traj: 1
+    aug_mode: cn
+
+bc-st-aug-no-col:
+  algo: bc
+  multi: false
+  args:
+    eval_n_traj: 1
+    aug_mode: trn
+
+bc-st-aug-none:
+  algo: bc
+  multi: false
+  args:
+    eval_n_traj: 1
+    aug_mode: none
+
+# Multi-task (+ ablations)
+
+# (TODO: decide whether I want to include the full set of augmentation baselines
+# as well)
+
+gail-mt:
+  algo: gail
+  multi: true
+
+gail-st:
+  algo: gail
+  multi: false
+
+gail-mt-aug-none:
+  algo: gail
+  multi: true
+  args:
+    disc_aug: none
+
+gail-st-aug-none:
+  algo: gail
+  multi: false
+  args:
+    disc_aug: none
+
+# gail-trans:
+#   algo: gail
+#   multi: false
+#   transfer-variants:
+#     - TestAll
+
+# To make GAIL cheap, append this:
+#   args:
+#     total_n_steps: 4096
+#     snapshot_gap: 1
+
+# To make BC cheap, append this:
+#   args:
+#     total_n_batches: 1
+#     eval_every_n_batches: 1
+#     eval_n_traj: 5

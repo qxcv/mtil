@@ -92,6 +92,7 @@ def cli():
                   "noise",
                   "transrot",
                   "trn",
+                  "cn",
                   "all",
               ]),
               default="all",
