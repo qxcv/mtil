@@ -14,24 +14,26 @@ import ray
 import yaml
 
 DEMO_PATH_PATTERNS = {
-    'move-to-corner': '~/repos/milbench/demos-simplified/move-to-corner-2020-03-*/*.pkl.gz',  # noqa: E501
-    'move-to-region': '~/repos/milbench/demos-simplified/move-to-region-2020-04-*/*.pkl.gz',  # noqa: E501
-    'match-regions': '~/repos/milbench/demos-simplified/match-regions-2020-05-*/*.pkl.gz',  # noqa: E501
-    'find-dupe': '~/repos/milbench/demos-simplified/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
-    'cluster-colour': '~/repos/milbench/demos-simplified/cluster-colour-2020-05-*/*.pkl.gz',  # noqa: E501
-    'cluster-shape': '~/repos/milbench/demos-simplified/cluster-shape-2020-05-*/*.pkl.gz',  # noqa: E501
-    'fix-colour': '~/repos/milbench/demos-simplified/fix-colour-2020-05-*/*.pkl.gz',  # noqa: E501
-    'make-line': '~/repos/milbench/demos-simplified/make-line-2020-05-*/*.pkl.gz',  # noqa: E501
+    'move-to-corner': '~/repos/milbench/demos-ea/move-to-corner-2020-03-*/*.pkl.gz',  # noqa: E501
+    'move-to-region': '~/repos/milbench/demos-ea/move-to-region-2020-04-*/*.pkl.gz',  # noqa: E501
+    'match-regions': '~/repos/milbench/demos-ea/match-regions-2020-05-*/*.pkl.gz',  # noqa: E501
+    'find-dupe': '~/repos/milbench/demos-ea/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
+    'cluster-colour': '~/repos/milbench/demos-ea/cluster-colour-2020-05-*/*.pkl.gz',  # noqa: E501
+    'cluster-shape': '~/repos/milbench/demos-ea/cluster-shape-2020-05-*/*.pkl.gz',  # noqa: E501
+    'fix-colour': '~/repos/milbench/demos-ea/fix-colour-2020-05-*/*.pkl.gz',  # noqa: E501
+    'make-line': '~/repos/milbench/demos-ea/make-line-2020-05-*/*.pkl.gz',  # noqa: E501
 }  # yapf: disable
+# TODO: make the preprocessor configurable from the experiment file (but have a
+# default of LoRes4E or something)
 ENV_NAMES = {
-    'move-to-corner': 'MoveToCorner-Demo-LoResStack-v0',
-    'move-to-region': 'MoveToRegion-Demo-LoResStack-v0',
-    'match-regions': 'MatchRegions-Demo-LoResStack-v0',
-    'find-dupe': 'FindDupe-Demo-LoResStack-v0',
-    'cluster-colour': 'ClusterColour-Demo-LoResStack-v0',
-    'cluster-shape': 'ClusterShape-Demo-LoResStack-v0',
-    'fix-colour': 'FixColour-Demo-LoResStack-v0',
-    'make-line': 'MakeLine-Demo-LoResStack-v0',
+    'move-to-corner': 'MoveToCorner-Demo-LoRes4E-v0',
+    'move-to-region': 'MoveToRegion-Demo-LoRes4E-v0',
+    'match-regions': 'MatchRegions-Demo-LoRes4E-v0',
+    'find-dupe': 'FindDupe-Demo-LoRes4E-v0',
+    'cluster-colour': 'ClusterColour-Demo-LoRes4E-v0',
+    'cluster-shape': 'ClusterShape-Demo-LoRes4E-v0',
+    'fix-colour': 'FixColour-Demo-LoRes4E-v0',
+    'make-line': 'MakeLine-Demo-LoRes4E-v0',
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_GPUS = 4
@@ -71,7 +73,7 @@ class EnvName:
 
 def insert_variant(env_name, variant):
     """Insert a variant name into an environment name, omitting suffix. For
-    instance, `insert_variant("MoveToCorner-Demo-LoResStack-v0", "TestAll")`
+    instance, `insert_variant("MoveToCorner-Demo-LoRes4E-v0", "TestAll")`
     yields `"MoveToCorner-TestAll-v0"`."""
     parsed = EnvName(env_name)
     new_name = (parsed.name_prefix + '-' + variant + parsed.version_suffix)

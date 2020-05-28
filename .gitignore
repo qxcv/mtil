@@ -12,3 +12,6 @@ commands*.sh
 .ipynb_checkpoints
 survey-data
 *bak
+*.png
+*.mp4
+*.gif

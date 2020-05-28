@@ -8,6 +8,7 @@ from milbench.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 from milbench.benchmarks import EnvName
 import numpy as np
+from rlpyt.utils.collections import NamedArrayTupleSchema
 import torch
 from torch.utils import data
 
@@ -186,7 +187,12 @@ def add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc):
 
 
 def insert_task_source_ids(obs_seq, task_id, variant_id, source_id):
-    nobs = len(obs_seq.obs)
+    # figuring out the length of the sequence requires a bit of judo because
+    # the observations are stored as namedarraytuples
+    lens = []
+    tree_map(lambda t: lens.append(len(t)), obs_seq.obs)
+    nobs, = set(lens)
+
     task_id_array = np.full((nobs, ), task_id, dtype='int64')
     variant_id_array = np.full((nobs, ), variant_id, dtype='int64')
     source_id_array = np.full((nobs, ), source_id, dtype='int64')
@@ -195,6 +201,29 @@ def insert_task_source_ids(obs_seq, task_id, variant_id, source_id):
                             variant_id=variant_id_array,
                             source_id=source_id_array)
     return obs_seq._replace(obs=eio_arr)
+
+
+def convert_obs_to_namedarraytuples(traj):
+    # If using an appropriate preprocessor (e.g. LoResStack4E), MILBench
+    # observations will be plain numpy ndarray, in which case we don't need to
+    # do anything here
+    if isinstance(traj.obs[0], np.ndarray):
+        return traj
+
+    # Otherwise, all MILBench observations are dicts with "ego" and "allo"
+    # keys. We convert the observations to named(array)tuples so that it's
+    # easier to work with them.
+    fields = tuple(traj.obs[0].keys())
+    nats = NamedArrayTupleSchema('MILBenchObs', fields)
+    # for each key in the observation dict, stack values for that key along
+    # time axis
+    by_field = collections.defaultdict(list)
+    for item in traj.obs:
+        for field in fields:
+            by_field[field].append(item[field])
+    # now convert dict of stacked observations to a NamedArrayTuple
+    return traj._replace(obs=nats._make(*(np.stack(by_field[field], axis=0)
+                                          for field in fields)))
 
 
 def load_demos_mt(demo_paths,
@@ -215,7 +244,8 @@ def load_demos_mt(demo_paths,
         num_demo_sources += 1
 
     # if necessary, update the environment names to also include a preprocessor
-    # name
+    # name (we want to apply preprocessors before breaking dict structure
+    # apart)
     if mb_preproc:
         demo_trajs_by_env, demo_env_names, variant_names, new_env_names \
             = add_mb_preproc(demo_trajs_by_env, variant_names, mb_preproc)
@@ -225,6 +255,13 @@ def load_demos_mt(demo_paths,
         }
     else:
         demo_env_names = sorted(set(demo_trajs_by_env))
+
+    # demo observations will be dicts containing ego and/or allo view; we want
+    # to turn those into namedarraytuples
+    demo_trajs_by_env = {
+        key: [convert_obs_to_namedarraytuples(traj) for traj in trajs]
+        for key, trajs in demo_trajs_by_env.items()
+    }
 
     # now make a grouped index of env names & add env IDs to observations
     variant_groups = GroupedVariantNames(demo_env_names, variant_names)

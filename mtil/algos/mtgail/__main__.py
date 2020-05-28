@@ -33,9 +33,9 @@ def cli():
 @cli.command()
 @click.option(
     "--add-preproc",
-    default="LoResStack",
+    default="LoRes4E",
     type=str,
-    help="add preprocessor to the demos and test env (default: 'LoResStack')")
+    help="add preprocessor to the demos and test env (default: 'LoRes4E')")
 @click.option("--gpu-idx", default=0, help="index of GPU to use")
 @click.option("--cpu-list",
               default=None,
@@ -49,6 +49,7 @@ def cli():
     help="how many env transitions to take between writing log outputs")
 # FIXME: rename these --ppo-batch-b and --ppo-batch-t instead, since that's
 # really what they are.
+# (also maybe turn default sampler_batch_B up? Seems too low for multitask.)
 @click.option("-B",
               "--sampler-batch-envs",
               "sampler_batch_B",
@@ -87,10 +88,11 @@ def cli():
 @click.option("--omit-noop/--no-omit-noop",
               default=False,
               help="omit demonstration (s,a) pairs whenever a is a noop")
-@click.option("--disc-aug",
-              default="all",
-              # TODO: add choices for this, like in mtbc/__main__.py
-              help="choose augmentation for discriminator")
+@click.option(
+    "--disc-aug",
+    default="all",
+    # TODO: add choices for this, like in mtbc/__main__.py
+    help="choose augmentation for discriminator")
 @click.option("--danger-debug-reward-weight",
               type=float,
               default=None,
@@ -362,11 +364,41 @@ def main(
 
     print("Training!")
     n_uniq_envs = variant_groups.num_tasks
+    log_params = {
+        'add_preproc': add_preproc,
+        'seed': seed,
+        'sampler_batch_T': sampler_batch_T,
+        'sampler_batch_B': sampler_batch_B,
+        'disc_batch_size': disc_batch_size,
+        'disc_up_per_iter': disc_up_per_iter,
+        'total_n_steps': total_n_steps,
+        'bc_loss': bc_loss,
+        'omit_noop': omit_noop,
+        'disc_aug': disc_aug,
+        'danger_debug_reward_weight': danger_debug_reward_weight,
+        'disc_lr': disc_lr,
+        'disc_use_act': disc_use_act,
+        'disc_all_frames': disc_all_frames,
+        'disc_net_attn': disc_net_attn,
+        'disc_use_bn': disc_use_bn,
+        'ppo_lr': ppo_lr,
+        'ppo_gamma': ppo_gamma,
+        'ppo_lambda': ppo_lambda,
+        'ppo_ent': ppo_ent,
+        'ppo_adv_clip': ppo_adv_clip,
+        'ppo_norm_adv': ppo_norm_adv,
+        'transfer_variants': transfer_variants,
+        'transfer_pol_batch_weight': transfer_pol_batch_weight,
+        'transfer_disc_anneal': transfer_disc_anneal,
+        'ndemos': len(demos),
+        'n_uniq_envs': n_uniq_envs,
+    }
     with make_logger_ctx(out_dir,
                          "mtgail",
                          f"mt{n_uniq_envs}",
                          run_name,
-                         snapshot_gap=snapshot_gap):
+                         snapshot_gap=snapshot_gap,
+                         log_params=log_params):
         torch.save(
             discriminator_mt,
             os.path.join(logger.get_snapshot_dir(), 'full_discrim_model.pt'))

@@ -40,9 +40,9 @@ def cli():
 @cli.command()
 @click.option(
     "--add-preproc",
-    default="LoResStack",
+    default="LoRes4E",
     type=str,
-    help="add preprocessor to the demos and test env (default: 'LoResStack')")
+    help="add preprocessor to the demos and test env (default: 'LoRes4E')")
 @click.option("--gpu-idx", default=None, help="index of GPU to use")
 @click.option("--cpu-list",
               default=None,
@@ -304,7 +304,8 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
 
 @cli.command()
 @click.option("--env-name",
-              default="MoveToCorner-Demo-LoResStack-v0",
+              required=True,
+              type=str,
               help="name of env to get policy for")
 @click.option("--transfer-to",
               default=None,
@@ -429,7 +430,8 @@ class MTBCEvalProtocol(EvaluationProtocol):
 
 @cli.command()
 @click.option("--env-name",
-              default="MoveToCorner-Demo-LoResStack-v0",
+              required=True,
+              type=str,
               help="name of env to get policy for")
 # @click.option("--det-pol/--no-det-pol",
 #               default=False,
