@@ -293,8 +293,23 @@ def parse_expts_file(file_path):
         algo = run_dict.pop('algo')
         generator = globals()['gen_command_' + algo]
 
+        # multi-task = train on multiple tasks, test on multiple tasks
         is_multi_task = run_dict.pop('multi', False)
         assert isinstance(is_multi_task, bool)
+
+        # for multi-task things, we can also fine-tune the recovered policy on
+        # different tasks separately
+        fine_tune = run_dict.pop('fine-tune', False)
+        assert isinstance(fine_tune, bool)
+        if fine_tune:
+            assert is_multi_task, \
+                "the fine-tune option is only available for multi-task runs"
+
+        fine_tune_args = run_dict.pop('fine-tune-args', [])
+        assert isinstance(fine_tune_args, list)
+        if fine_tune_args:
+            assert fine_tune, \
+                "can only supply fine-tune-args when fine-tune=True"
 
         # these go straight through to the algorithm and will be validated
         # later
@@ -326,8 +341,10 @@ def parse_expts_file(file_path):
             'algo': algo,
             'generator': generator,
             'is_multi_task': is_multi_task,
-            'trans_variants': trans_variants,
+            'fine_tune': fine_tune,
             'args': args,
+            'fine_tune_args': fine_tune_args,
+            'trans_variants': trans_variants,
             'ntraj': ntraj,
             'env_subset': env_subset,
             'nseeds': nseeds,
@@ -346,25 +363,34 @@ def select_subset(collection, n, rng):
     return [collection[i] for i in indices]
 
 
-Run = collections.namedtuple('Run', ('train_cmd', 'test_cmds'))
+def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
+               fine_tune_args, nseeds, suffix, out_dir, trans_variants, ntraj,
+               env_subset, nworkers, dry_run, job_ngpus, job_ngpus_eval):
+    if dry_run:
+        call_remote = ray.remote(just_print)
+        call_remote_eval = ray.remote(just_print)
+    else:
+        call_remote = ray.remote(num_gpus=job_ngpus)(run_check_wrapper)
+        call_remote_eval = ray.remote(
+            num_gpus=job_ngpus_eval)(run_check_wrapper)
 
-
-def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
-                  suffix, out_dir, trans_variants, ntraj, env_subset,
-                  nworkers):
-    runs = []
     seeds = generate_seeds(nseeds)
+    all_handles = []
     for seed in seeds:
         rng = np.random.RandomState(seed)
         if is_multi_task:
+            mt_handles = []
+
             # one train command corresponding to N test commands
             mt_run_name = f"{run_name}-{suffix}-s{seed}"
             demo_paths = []
-            for expt in env_subset:
+            per_task_paths = {}
+            for expt in sorted(env_subset):
                 globbed = glob.glob(
                     os.path.expanduser(DEMO_PATH_PATTERNS[expt]))
                 chosen = select_subset(globbed, ntraj, rng)
                 demo_paths.extend(chosen)
+                per_task_paths[expt] = chosen
 
             mt_trans_variants = [
                 insert_variant(ENV_NAMES[expt], variant)
@@ -378,18 +404,59 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                                        trans_env_names=mt_trans_variants,
                                        cpu_list=generate_core_list(nworkers),
                                        **args)
+            mt_train_handle = call_remote.remote((mt_cmd, ), {}, None)
+            mt_handles.append(mt_train_handle)
 
-            eval_cmds = []
-            for task_shorthand in env_subset:
-                env_name = ENV_NAMES[task_shorthand]
+            # path that we'll load pretrained policy from, for pre-training
+            # experiments
+            load_path = os.path.join(mt_dir, 'itr_LATEST.pkl')
+
+            for task in sorted(env_subset):
+                env_name = ENV_NAMES[task]
                 mt_eval_cmd = make_eval_cmd(
                     run_name,
                     mt_dir,
-                    task_shorthand,
+                    task,
                     env_name,
                     cpu_list=generate_core_list(nworkers))
-                eval_cmds.append(mt_eval_cmd)
-            runs.append(Run(mt_cmd, eval_cmds))
+                # pass in mt_train_handle as an ignored argument in order to
+                # create artificial dependence on earlier task
+                mt_test_handle = call_remote_eval.remote((mt_eval_cmd, ), {},
+                                                         mt_train_handle)
+                mt_handles.append(mt_test_handle)
+
+                # optional fine-tuning runs
+                if fine_tune:
+                    ft_run_name = f"{run_name}-{task}-{suffix}-s{seed}"
+                    demo_paths = per_task_paths[task]
+                    ft_trans_variants = [
+                        insert_variant(ENV_NAMES[task], variant)
+                        for variant in trans_variants
+                    ]
+
+                    ft_cmd, ft_dir = generator(
+                        demo_paths=demo_paths,
+                        run_name=ft_run_name,
+                        seed=seed,
+                        out_root=out_dir,
+                        trans_env_names=ft_trans_variants,
+                        cpu_list=generate_core_list(nworkers),
+                        load_policy=load_path,
+                        **fine_tune_args)
+                    ft_handle = call_remote.remote((ft_cmd, ), {},
+                                                   mt_train_handle)
+
+                    ft_eval_cmd = make_eval_cmd(
+                        run_name,
+                        ft_dir,
+                        task,
+                        ENV_NAMES[task],
+                        cpu_list=generate_core_list(nworkers))
+                    ft_eval_handle = call_remote_eval.remote((ft_eval_cmd, ),
+                                                             {}, ft_handle)
+                    all_handles.extend([ft_handle, ft_eval_handle])
+
+            all_handles.extend(mt_handles)
 
         else:
             # one test command for each of N train commands
@@ -411,6 +478,7 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                     trans_env_names=st_trans_variants,
                     cpu_list=generate_core_list(nworkers),
                     **args)
+                st_train_handle = call_remote.remote((st_cmd, ), {}, None)
 
                 st_eval_cmd = make_eval_cmd(
                     run_name,
@@ -418,34 +486,36 @@ def generate_runs(*, run_name, algo, generator, is_multi_task, args, nseeds,
                     task,
                     ENV_NAMES[task],
                     cpu_list=generate_core_list(nworkers))
-                runs.append(Run(st_cmd, [st_eval_cmd]))
+                st_test_handle = call_remote_eval.remote((st_eval_cmd, ), {},
+                                                         st_train_handle)
 
-    return runs
+                all_handles.extend([st_train_handle, st_test_handle])
 
-
-def run_check(*args):
-    """Like subprocess.run, but passes check=True. Need a separate function for
-    this because ray.remote doesn't allow remote calls to take keyword
-    arguments :("""
-    return subprocess.run(*args, check=True)
+    return all_handles
 
 
-class RunDummy:
-    def remote(self, *args, **kwargs):
-        """Simply prints command."""
-        sargs = ", ".join(map(repr, args))
-        if kwargs:
-            values = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-            if args:
-                skwargs = ", " + values
-            else:
-                skwargs = values
-        else:
-            skwargs = ""
-        print(f"subprocess.run({sargs}{skwargs})")
-        # object() can be hashed and compared for equality, so it acts like a
-        # Ray remote call handle when we put it in a dict
-        return object()
+def run_check_wrapper(run_args, run_kwargs, wait=None):
+    """Wrapper around subprocess.run (with check=True by default). A wrapper is
+    required because ray.remote doesn't allow remote calls to take keyword
+    arguments. The `wait` argument is ignored; its only purpose is to
+    (optionally) enforce a task ordering by making this task depend on some
+    other task."""
+    if 'check' not in run_kwargs:
+        run_kwargs = dict(run_kwargs)
+        run_kwargs['check'] = True
+    return subprocess.run(*run_args, **run_kwargs)
+
+
+def just_print(run_args, run_kwargs, wait=None):
+    """Function with same signature as run_check_wrapper which just prints its
+    arguments, instead of running them."""
+    if 'check' not in run_kwargs:
+        run_kwargs = dict(run_kwargs)
+        run_kwargs['check'] = True
+    args_str = ', '.join(map(str, run_args))
+    kwargs_str = ', '.join(f'{k}={v}' for k, v in run_kwargs.items())
+    sep = ', ' if args_str and kwargs_str else ''
+    print(f'subprocess.run({args_str}{sep}{kwargs_str})')
 
 
 @click.command()
@@ -494,8 +564,7 @@ def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
     else:
         if ray_ncpus is not None:
             ray_kwargs["num_cpus"] = ray_ncpus
-    if not dry_run:
-        ray.init(**ray_kwargs)
+    ray.init(**ray_kwargs)
 
     if suffix is None:
         # add 'T%H:%M' for hours and minutes
@@ -503,68 +572,30 @@ def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
 
     expts_specs = parse_expts_file(spec)
 
-    all_runs = []
+    all_handles = []
     for expt_spec in expts_specs:
         # we have to run train_cmds first, then test_cmds second
-        new_runs = generate_runs(**expt_spec,
+        new_handles = spawn_runs(**expt_spec,
                                  suffix=suffix,
                                  out_dir=out_dir,
-                                 nworkers=job_nworkers)
-        all_runs.extend(new_runs)
+                                 nworkers=job_nworkers,
+                                 dry_run=dry_run,
+                                 job_ngpus=job_ngpus,
+                                 job_ngpus_eval=job_ngpus_eval)
+        all_handles.extend(new_handles)
 
-    if dry_run:
-        call_remote = RunDummy()
-        call_remote_eval = RunDummy()
-    else:
-        call_remote = ray.remote(num_gpus=job_ngpus)(run_check)
-        call_remote_eval = ray.remote(num_gpus=job_ngpus_eval)(run_check)
-
-    # first launch all train CMDs
-    running_train_cmds = collections.OrderedDict()
-    for run in all_runs:
-        wait_handle = call_remote.remote(run.train_cmd)
-        running_train_cmds[wait_handle] = run
-
-    running_test_cmds = collections.OrderedDict()
-    while running_train_cmds or running_test_cmds:
-        if dry_run:
-            finished = list(running_train_cmds.keys())
-        else:
-            finished, _ = ray.wait(list(running_train_cmds.keys()),
-                                   timeout=1.0)
-
+    # now iterate over the returned handles & wait for them all to finish
+    remaining_handles = list(all_handles)
+    while len(remaining_handles) > 0:
+        finished, remaining_handles = ray.wait(remaining_handles)
         for f_handle in finished:
-            run = running_train_cmds[f_handle]
-            del running_train_cmds[f_handle]
             try:
                 if not dry_run:
                     ret_value = ray.get(f_handle)
-                    print(f"Run {run} returned value {ret_value.returncode}")
+                    print(f"Run returned value {ret_value.returncode}")
             except Exception as ex:
-                print(f"Got exception while popping run {run}: {ex}")
+                print(f"Got exception while popping run: {ex}")
                 continue
-
-            for test_cmd in run.test_cmds:
-                test_handle = call_remote_eval.remote(test_cmd)
-                running_test_cmds[test_handle] = run
-
-        if dry_run:
-            done_test_cmds = list(running_test_cmds.keys())
-        else:
-            done_test_cmds, _ = ray.wait(list(running_test_cmds.keys()),
-                                         timeout=1.0)
-        for d_handle in done_test_cmds:
-            run = running_test_cmds[d_handle]
-            del running_test_cmds[d_handle]
-            try:
-                if not dry_run:
-                    ret_value = ray.get(d_handle)
-                    print(f"Test command on run {run} returned value "
-                          f"{ret_value.returncode}")
-            except Exception as ex:
-                print(f"Got exception from test cmd for run {run}: {ex}")
-                continue
-
     print("Everything finished!")
 
 

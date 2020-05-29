@@ -168,9 +168,13 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
             # of horizon; that should get more samples from harder envs
             task_var_weights=None)
         if load_policy is not None:
+            try:
+                pol_path = get_latest_path(load_policy)
+            except ValueError:
+                pol_path = load_policy
             policy_ctor = functools.partial(
                 adapt_pol_loader,
-                pol_path=load_policy,
+                pol_path=pol_path,
                 task_ids_and_demo_env_names=task_ids_and_demo_env_names)
             policy_kwargs = {}
         else:
