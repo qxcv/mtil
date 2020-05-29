@@ -305,8 +305,8 @@ def parse_expts_file(file_path):
             assert is_multi_task, \
                 "the fine-tune option is only available for multi-task runs"
 
-        fine_tune_args = run_dict.pop('fine-tune-args', [])
-        assert isinstance(fine_tune_args, list)
+        fine_tune_args = run_dict.pop('fine-tune-args', {})
+        assert isinstance(fine_tune_args, dict)
         if fine_tune_args:
             assert fine_tune, \
                 "can only supply fine-tune-args when fine-tune=True"
