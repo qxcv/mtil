@@ -14,13 +14,37 @@ from mtil.utils.torch import repeat_dataset
 
 
 class BehaviouralCloningPPOMixin:
-    def __init__(self, bc_loss_coeff, expert_traj_loader, *args, **kwargs):
+    """Mixin for PPO that supports behavioural cloning (+ augmentation, which
+    is necessary to make BC work...)."""
+
+    def __init__(self, bc_loss_coeff, expert_traj_loader, aug_model, *args,
+                 **kwargs):
         super().__init__(*args, **kwargs)
+        self.aug_model = aug_model
         self.bc_loss_coeff = bc_loss_coeff
         if bc_loss_coeff:
             self.expert_batch_iter = repeat_dataset(expert_traj_loader)
         else:
             self.expert_batch_iter = None
+
+    def augment_samples(self, samples):
+        # TODO: also add augmentation to BC inputs
+        if not self.aug_model:
+            raise NotImplementedError(
+                "need to fix this so that it does on-device augmentation")
+            return samples
+
+        # apply augmentations, if necessary
+        old_inner_obs = samples.env.observation.observation
+        new_inner_obs = self.aug_model(old_inner_obs)
+
+        # now do annoying modification of nested namedtuples :(
+        new_outer_obs = samples.env.observation._replace(
+            observation=new_inner_obs)
+        new_env = samples.env._replace(observation=new_outer_obs)
+        new_samples = samples._replace(env=new_env)
+
+        return new_samples
 
     def optimize_agent(self, itr, samples):
         """
@@ -30,11 +54,11 @@ class BehaviouralCloningPPOMixin:
         formed within device, without further data transfer.
         """
         recurrent = self.agent.recurrent
+        samples = self.augment_samples(samples)
         agent_inputs = AgentInputs(  # Move inputs to device once, index there.
             observation=samples.env.observation,
             prev_action=samples.agent.prev_action,
-            prev_reward=samples.env.prev_reward,
-        )
+            prev_reward=samples.env.prev_reward, )
         agent_inputs = buffer_to(agent_inputs, device=self.agent.device)
         return_, advantage, valid = self.process_returns(samples)
         loss_inputs = LossInputs(  # So can slice all.
@@ -43,8 +67,7 @@ class BehaviouralCloningPPOMixin:
             return_=return_,
             advantage=advantage,
             valid=valid,
-            old_dist_info=samples.agent.agent_info.dist_info,
-        )
+            old_dist_info=samples.agent.agent_info.dist_info, )
         if recurrent:
             # Leave in [B,N,H] for slicing to minibatches.
             init_rnn_state = samples.agent.agent_info.prev_rnn_state[0]  # T=0.
@@ -124,9 +147,8 @@ class BehaviouralCloningPPOMixin:
             dist_info, value = self.agent(*agent_inputs)
         dist = self.agent.distribution
 
-        ratio = dist.likelihood_ratio(action,
-                                      old_dist_info=old_dist_info,
-                                      new_dist_info=dist_info)
+        ratio = dist.likelihood_ratio(
+            action, old_dist_info=old_dist_info, new_dist_info=dist_info)
         surr_1 = ratio * advantage
         clipped_ratio = torch.clamp(ratio, 1. - self.ratio_clip,
                                     1. + self.ratio_clip)
@@ -152,11 +174,10 @@ class BehaviouralCloningPPOMixin:
                 # the previous action and reward. (IIRC that only includes
                 # recurrent agents in rlpyt, though)
                 dummy_prev_action = bc_actions
-                dummy_prev_reward = torch.zeros(bc_actions.shape[0],
-                                                device=bc_actions.device)
-                bc_dist_info, _ = self.agent(bc_observations,
-                                             dummy_prev_action,
-                                             dummy_prev_reward)
+                dummy_prev_reward = torch.zeros(
+                    bc_actions.shape[0], device=bc_actions.device)
+                bc_dist_info, _ = self.agent(
+                    bc_observations, dummy_prev_action, dummy_prev_reward)
             expert_ll = dist.log_likelihood(bc_actions, bc_dist_info)
             # bc_loss = -self.bc_loss_coeff * valid_mean(expert_ll, bc_valid)
             # TODO: also log BC accuracy (or maybe do it somewhere else, IDK)
