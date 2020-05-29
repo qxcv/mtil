@@ -427,7 +427,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
 
                 # optional fine-tuning runs
                 if fine_tune:
-                    ft_run_name = f"{run_name}-{task}-{suffix}-s{seed}"
+                    ft_run_name = f"{run_name}-ft-{task}-{suffix}-s{seed}"
                     demo_paths = per_task_paths[task]
                     ft_trans_variants = [
                         insert_variant(ENV_NAMES[task], variant)
@@ -447,7 +447,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                                                    mt_train_handle)
 
                     ft_eval_cmd = make_eval_cmd(
-                        run_name,
+                        ft_run_name,
                         ft_dir,
                         task,
                         ENV_NAMES[task],
