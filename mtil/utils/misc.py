@@ -2,6 +2,7 @@
 
 from collections import OrderedDict
 import datetime
+import inspect
 import os
 import random
 import sys
@@ -200,3 +201,32 @@ def load_state_dict_or_model(state_dict_or_model_path):
         model.load_state_dict(state_dict)
 
     return model
+
+
+def save_my_kwargs(me, locals):  # noqa: A002
+    """Magically create a dictionary containing arguments for the calling
+    function (all as keyword arguments, even if they were supplied as
+    positionals). Does not support positional-only or variadic positional
+    arguments. Also will not return 'self' argument when called on a bound
+    method of a class (which is good---avoids reference cycles).
+
+    Args:
+        me (callable): the function that we want kwargs for.
+        locals (dict): dictionary of locals *inside* that function. Argument
+            names will be read out of this.
+
+    Returns:
+        kwargs (collections.OrderedDict): dictionary of keyword arguments
+            derived from locals."""
+    sig = inspect.signature(me)
+    kwargs = OrderedDict()
+    for param_name, param in sig.parameters.items():
+        value = locals[param_name]
+        if param.kind is param.POSITIONAL_OR_KEYWORD:
+            kwargs[param_name] = value
+        elif param.kind is param.VAR_KEYWORD:
+            kwargs.update(value)
+        else:
+            raise TypeError(
+                f"This doesn't yet support parameters of kind {param.kind}")
+    return kwargs

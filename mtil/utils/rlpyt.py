@@ -4,13 +4,11 @@ import os
 
 import gym
 from milbench import register_envs
-from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.envs.gym_schema import GymEnvWrapper
 from rlpyt.utils.collections import AttrDict
 from rlpyt.utils.logging import context as log_ctx
 from rlpyt.utils.logging import logger
 
-from mtil.models import MultiHeadPolicyNet
 from mtil.utils.misc import make_unique_run_name
 
 
@@ -84,25 +82,6 @@ def get_policy_spec_milbench(env_metas):
     n_actions = act_space.n  # categorical action space
     model_kwargs = dict(in_chans=in_chans, n_actions=n_actions)
     return model_kwargs
-
-
-def make_agent_policy_mt(env_metas, task_ids_and_demo_env_names):
-    # deferred import to avoid cycle
-    from mtil.sample_mux import MuxTaskModelWrapper
-
-    model_in_out_kwargs = get_policy_spec_milbench(env_metas)
-    model_kwargs = {
-        'env_ids_and_names': task_ids_and_demo_env_names,
-        **model_in_out_kwargs,
-    }
-    model_ctor = MultiHeadPolicyNet
-    ppo_agent = CategoricalPgAgent(
-        ModelCls=MuxTaskModelWrapper,
-        model_kwargs=dict(
-            model_ctor=model_ctor,
-            # task_id=env_id,
-            model_kwargs=model_kwargs))
-    return ppo_agent, model_ctor, model_kwargs
 
 
 # Spec data:

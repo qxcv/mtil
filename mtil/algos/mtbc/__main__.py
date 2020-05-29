@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import itertools as it
 import multiprocessing as mp
 import os
@@ -15,19 +16,19 @@ from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 from rlpyt.utils.logging import logger
 import torch
 
-from mtil.algos.mtbc.mtbc import (MinBCWeightingModule,
-                                  copy_model_into_agent_eval, do_training_mt,
-                                  eval_model, eval_model_st, get_latest_path,
-                                  make_env_tag, saved_model_loader_ft,
-                                  strip_mb_preproc_name,
-                                  wrap_model_for_fixed_task)
+from mtil.algos.mtbc.mtbc import (
+    MinBCWeightingModule, adapt_pol_loader, copy_model_into_agent_eval,
+    do_training_mt, eval_model, eval_model_st, get_latest_path, make_env_tag,
+    saved_model_loader_ft, strip_mb_preproc_name, wrap_model_for_fixed_task)
 from mtil.augmentation import MILBenchAugmentations
 from mtil.demos import get_demos_meta, make_loader_mt
-from mtil.sample_mux import make_mux_sampler
-from mtil.utils.misc import (CPUListParamType, load_state_dict_or_model,
-                             sample_cpu_list, sane_click_init, set_seeds)
-from mtil.utils.rlpyt import (MILBenchGymEnv, make_agent_policy_mt,
-                              make_logger_ctx)
+from mtil.models import MultiHeadPolicyNet
+from mtil.sample_mux import MuxTaskModelWrapper, make_mux_sampler
+from mtil.utils.misc import (
+    CPUListParamType, load_state_dict_or_model, sample_cpu_list,
+    sane_click_init, set_seeds)
+from mtil.utils.rlpyt import (
+    MILBenchGymEnv, get_policy_spec_milbench, make_logger_ctx)
 
 
 @click.group()
@@ -97,6 +98,11 @@ def cli():
               ]),
               default="all",
               help="augmentations to use")
+@click.option("--load-policy",
+              type=str,
+              default=None,
+              help="start by loading a pretrained policy (will ignore all "
+              "other model options)")
 # set this to some big value if training on perceptron or something
 @click.option("--snapshot-gap",
               default=1,
@@ -110,7 +116,7 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
           eval_every_n_batches, out_dir, run_name, gpu_idx, cpu_list,
           eval_n_traj, snapshot_gap, omit_noop, net_width_mul, net_use_bn,
           net_dropout, net_coord_conv, net_attention, net_task_spec_layers,
-          aug_mode, min_bc):
+          load_policy, aug_mode, min_bc):
 
     # TODO: abstract setup code. Seeds & GPUs should go in one function. Env
     # setup should go in another function (or maybe the same function). Dataset
@@ -161,17 +167,28 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
             # TODO: instead of doing this, try sampling in proportion to length
             # of horizon; that should get more samples from harder envs
             task_var_weights=None)
-        agent, policy_ctor, policy_kwargs = make_agent_policy_mt(
-            env_metas, task_ids_and_demo_env_names)
-        custom_policy_kwargs = {
-            'width': net_width_mul,
-            'use_bn': net_use_bn,
-            'dropout': net_dropout,
-            'coord_conv': net_coord_conv,
-            'attention': net_attention,
-            'n_task_spec_layers': net_task_spec_layers,
-        }
-        policy_kwargs.update(custom_policy_kwargs)
+        if load_policy is not None:
+            policy_ctor = functools.partial(
+                adapt_pol_loader,
+                pol_path=load_policy,
+                task_ids_and_demo_env_names=task_ids_and_demo_env_names)
+            policy_kwargs = {}
+        else:
+            policy_kwargs = {
+                'env_ids_and_names': task_ids_and_demo_env_names,
+                'width': net_width_mul,
+                'use_bn': net_use_bn,
+                'dropout': net_dropout,
+                'coord_conv': net_coord_conv,
+                'attention': net_attention,
+                'n_task_spec_layers': net_task_spec_layers,
+                **get_policy_spec_milbench(env_metas),
+            }
+            policy_ctor = MultiHeadPolicyNet
+        agent = CategoricalPgAgent(ModelCls=MuxTaskModelWrapper,
+                                   model_kwargs=dict(
+                                       model_ctor=policy_ctor,
+                                       model_kwargs=policy_kwargs))
         sampler.initialize(agent=agent,
                            seed=np.random.randint(1 << 31),
                            affinity=affinity)

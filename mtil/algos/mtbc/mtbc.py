@@ -274,3 +274,12 @@ def saved_model_loader_ft(state_dict_or_model_path, env_name):
     model = load_state_dict_or_model(state_dict_or_model_path)
     ft_wrapper = wrap_model_for_fixed_task(model, env_name)
     return ft_wrapper
+
+
+# weird policy "constructor" that actually reloads a pretrained multi-task
+# policy from disk & rebuilds it to handle new set of tasks
+def adapt_pol_loader(pol_path, task_ids_and_demo_env_names):
+    saved_model = load_state_dict_or_model(pol_path)
+    new_model = saved_model.rebuild_net(
+        task_ids_and_demo_env_names)
+    return new_model

@@ -6,6 +6,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from mtil.utils.misc import save_my_kwargs
+
 
 class MILBenchPreprocLayer(nn.Module):
     """Takes a uint8 image in format [N,T,H,W,C] (a batch of several time steps
@@ -324,10 +326,17 @@ class MultiHeadPolicyNet(nn.Module):
                  attention=False,
                  n_task_spec_layers=1,
                  ActivationCls=torch.nn.ReLU):
+        # save kwargs for rebuild_net
+        self.__kwargs = save_my_kwargs(self.__init__, locals())
+        assert 'self' not in self.__kwargs
+
+        # init module so we can add parameters
         super().__init__()
+
         assert n_task_spec_layers >= 1, \
             f"must have >=1 task specific layers; got {n_task_spec_layers} " \
             f"layers instead"
+        # TODO: save kwargs here!
         self.preproc = MILBenchPreprocLayer()
         fc_dim = 128 * width
         self.feature_extractor = MILBenchFeatureNetwork(
@@ -370,6 +379,54 @@ class MultiHeadPolicyNet(nn.Module):
         self.env_ids_and_names = sorted(env_ids_and_names)
         self.fc_dim = fc_dim
         self.n_actions = n_actions
+
+    def rebuild_net(self, new_env_ids_and_names):
+        """Build a copy of this network"""
+        new_kwargs = self.__kwargs.copy()
+        eid_key = 'env_ids_and_names'
+        del new_kwargs[eid_key]
+        new_kwargs[eid_key] = new_env_ids_and_names
+        new_model = type(self)(**new_kwargs)
+
+        # Here we build a list mapping old slot numbers to new slot numbers.
+        # For this to even be representable as a list, we need
+        # new_env_ids_and_names to have sequentially-assigned task IDs.
+        new_names, new_ids = zip(*new_env_ids_and_names)
+        assert min(new_ids) == 0 and max(new_ids) == len(new_ids) - 1, new_ids
+        new_id_to_ename = dict(zip(new_ids, new_names))
+        ename_to_old_id = dict(self.env_ids_and_names)
+        new_ids = [
+            ename_to_old_id[new_id_to_ename[new_id]]
+            for new_id in range(len(new_ids))
+        ]
+        n_old_tasks = len(self.env_ids_and_names)
+        n_new_tasks = len(new_env_ids_and_names)
+
+        # now we build a new state dict, with some special handling for FC
+        # layers
+        old_state_dict = self.state_dict()
+        new_state_dict = type(old_state_dict)()
+        for key, value in old_state_dict.items():
+            value = value.cpu()
+            if 'mt_fc_layers_' not in key:
+                new_state_dict[key] = value
+                continue
+
+            # It's multi-task, so we do some conversions. Note that
+            # MultiTaskAffineLayers have only one weight, and it's of shape
+            # [n_tasks, out*(in+1)]
+            assert key.endswith('.task_embeddings.weight'), \
+                f"unexpected key '{key}'---is this for a multitask layer?"
+            assert value.dim() == 2 and value.size(0) == n_old_tasks, \
+                "weird shape {value.shape} for {n_old_tasks}-task layer)"
+            new_value = value[new_ids]
+            assert new_value.shape == (n_new_tasks, value.size(1))
+            new_state_dict[key] = new_value
+
+        # finally, load up the new dict
+        new_model.load_state_dict(new_state_dict, strict=True)
+
+        return new_model
 
     def forward(self, obs, task_ids=None):
         if task_ids is None:

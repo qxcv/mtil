@@ -10,19 +10,22 @@ import os
 import readline  # noqa: F401
 
 import click
+from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.utils.logging import logger
 import torch
 
 from mtil.algos.mtgail.embedded_bc import BCCustomRewardPPO
-from mtil.algos.mtgail.mtgail import (GAILMinibatchRl, GAILOptimiser,
-                                      MILBenchDiscriminatorMT, RewardModel)
+from mtil.algos.mtgail.mtgail import (
+    GAILMinibatchRl, GAILOptimiser, MILBenchDiscriminatorMT, RewardModel)
 from mtil.augmentation import MILBenchAugmentations
 from mtil.demos import get_demos_meta, make_loader_mt
+from mtil.models import MultiHeadPolicyNet
 from mtil.reward_injection_wrappers import RewardEvaluatorMT
-from mtil.sample_mux import make_mux_sampler
-from mtil.utils.misc import (CPUListParamType, load_state_dict_or_model,
-                             sane_click_init, sample_cpu_list, set_seeds)
-from mtil.utils.rlpyt import make_agent_policy_mt, make_logger_ctx
+from mtil.sample_mux import MuxTaskModelWrapper, make_mux_sampler
+from mtil.utils.misc import (
+    CPUListParamType, load_state_dict_or_model, sample_cpu_list,
+    sane_click_init, set_seeds)
+from mtil.utils.rlpyt import get_policy_spec_milbench, make_logger_ctx
 
 
 @click.group()
@@ -223,8 +226,17 @@ def main(
         num_demo_sources=0,  # not important for now
         batch_B=sampler_batch_B,
         batch_T=sampler_batch_T)
-    ppo_agent, policy_ctor, policy_kwargs = make_agent_policy_mt(
-        env_metas, task_ids_and_demo_env_names)
+
+    policy_kwargs = {
+        'env_ids_and_names': task_ids_and_demo_env_names,
+        **get_policy_spec_milbench(env_metas),
+    }
+    policy_ctor = MultiHeadPolicyNet
+    ppo_agent = CategoricalPgAgent(
+        ModelCls=MuxTaskModelWrapper,
+        model_kwargs=dict(
+            model_ctor=policy_ctor,
+            model_kwargs=policy_kwargs))
 
     print("Setting up discriminator/reward model")
     discriminator_mt = MILBenchDiscriminatorMT(
