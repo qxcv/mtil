@@ -41,17 +41,20 @@ class BinaryDomainLossModule(nn.Module):
         super().__init__()
         self.classifier = make_binary_domain_classifier(in_chans, **kwargs)
 
-    def forward(self, x, labels_ints):
-        assert labels_ints.shape == (x.shape[0], )
-        assert ((labels_ints == 0) | (labels_ints == 1)).all()
+    def forward(self, x, binary_is_demo_labels, reduce_loss=True):
+        assert binary_is_demo_labels.shape == (x.shape[0], )
+        assert ((binary_is_demo_labels == 0) |
+                (binary_is_demo_labels == 1)).all()
         rev_x = reverse_grad(x)
         logits = self.classifier(rev_x)
         logits = logits.squeeze(1)
-        loss = F.binary_cross_entropy_with_logits(logits,
-                                                  labels_ints,
-                                                  reduction='mean')
+        loss = F.binary_cross_entropy_with_logits(
+            logits,
+            binary_is_demo_labels,
+            reduction='mean' if reduce_loss else 'none')
         pred_labels = (logits >= 0).to(torch.long)
-        acc = torch.mean((pred_labels == labels_ints).to(torch.float))
+        acc = torch.mean(
+            (pred_labels == binary_is_demo_labels).to(torch.float))
         return loss, acc
 
 

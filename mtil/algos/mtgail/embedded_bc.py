@@ -16,7 +16,6 @@ from mtil.utils.torch import repeat_dataset
 class BehaviouralCloningPPOMixin:
     """Mixin for PPO that supports behavioural cloning (+ augmentation, which
     is necessary to make BC work...)."""
-
     def __init__(self, bc_loss_coeff, expert_traj_loader, aug_model, *args,
                  **kwargs):
         super().__init__(*args, **kwargs)
@@ -28,11 +27,14 @@ class BehaviouralCloningPPOMixin:
             self.expert_batch_iter = None
 
     def augment_samples(self, samples):
-        # TODO: also add augmentation to BC inputs
+        # TODO:
+        # (1) Make this do on-device augmentation somehow.
+        # (2) Also do augmentation to BC inputs.
         if not self.aug_model:
-            raise NotImplementedError(
-                "need to fix this so that it does on-device augmentation")
             return samples
+
+        raise NotImplementedError(
+            "need to fix this so that it does on-device augmentation")
 
         # apply augmentations, if necessary
         old_inner_obs = samples.env.observation.observation
@@ -58,7 +60,8 @@ class BehaviouralCloningPPOMixin:
         agent_inputs = AgentInputs(  # Move inputs to device once, index there.
             observation=samples.env.observation,
             prev_action=samples.agent.prev_action,
-            prev_reward=samples.env.prev_reward, )
+            prev_reward=samples.env.prev_reward,
+        )
         agent_inputs = buffer_to(agent_inputs, device=self.agent.device)
         return_, advantage, valid = self.process_returns(samples)
         loss_inputs = LossInputs(  # So can slice all.
@@ -67,7 +70,8 @@ class BehaviouralCloningPPOMixin:
             return_=return_,
             advantage=advantage,
             valid=valid,
-            old_dist_info=samples.agent.agent_info.dist_info, )
+            old_dist_info=samples.agent.agent_info.dist_info,
+        )
         if recurrent:
             # Leave in [B,N,H] for slicing to minibatches.
             init_rnn_state = samples.agent.agent_info.prev_rnn_state[0]  # T=0.
@@ -147,8 +151,9 @@ class BehaviouralCloningPPOMixin:
             dist_info, value = self.agent(*agent_inputs)
         dist = self.agent.distribution
 
-        ratio = dist.likelihood_ratio(
-            action, old_dist_info=old_dist_info, new_dist_info=dist_info)
+        ratio = dist.likelihood_ratio(action,
+                                      old_dist_info=old_dist_info,
+                                      new_dist_info=dist_info)
         surr_1 = ratio * advantage
         clipped_ratio = torch.clamp(ratio, 1. - self.ratio_clip,
                                     1. + self.ratio_clip)
@@ -174,10 +179,11 @@ class BehaviouralCloningPPOMixin:
                 # the previous action and reward. (IIRC that only includes
                 # recurrent agents in rlpyt, though)
                 dummy_prev_action = bc_actions
-                dummy_prev_reward = torch.zeros(
-                    bc_actions.shape[0], device=bc_actions.device)
-                bc_dist_info, _ = self.agent(
-                    bc_observations, dummy_prev_action, dummy_prev_reward)
+                dummy_prev_reward = torch.zeros(bc_actions.shape[0],
+                                                device=bc_actions.device)
+                bc_dist_info, _ = self.agent(bc_observations,
+                                             dummy_prev_action,
+                                             dummy_prev_reward)
             expert_ll = dist.log_likelihood(bc_actions, bc_dist_info)
             # bc_loss = -self.bc_loss_coeff * valid_mean(expert_ll, bc_valid)
             # TODO: also log BC accuracy (or maybe do it somewhere else, IDK)

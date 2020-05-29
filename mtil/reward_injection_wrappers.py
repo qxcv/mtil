@@ -61,7 +61,6 @@ class RewardEvaluatorMT:
         self.reward_model = reward_model
 
     def evaluate(self, obs_tuple, act_tensor, update_stats=True):
-        # TODO: use task_ids somehow
         # put model into eval mode if necessary
         old_training = self.reward_model.training
         if old_training:
@@ -84,7 +83,6 @@ class RewardEvaluatorMT:
                 act_batch = act_flat[b_start:b_start + self.batch_size]
                 dev_obs = tree_map(lambda t: t.to(self.dev), obs_batch)
                 dev_acts = act_batch.to(self.dev)
-                # FIXME: make the reward model take in an env ID
                 dev_reward = self.reward_model(dev_obs, dev_acts)
                 reward_tensors.append(dev_reward.to(old_dev))
 

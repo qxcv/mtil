@@ -15,16 +15,16 @@ from rlpyt.utils.logging import logger
 import torch
 
 from mtil.algos.mtgail.embedded_bc import BCCustomRewardPPO
-from mtil.algos.mtgail.mtgail import (
-    GAILMinibatchRl, GAILOptimiser, MILBenchDiscriminatorMT, RewardModel)
+from mtil.algos.mtgail.mtgail import (GAILMinibatchRl, GAILOptimiser,
+                                      MILBenchDiscriminatorMT, RewardModel)
 from mtil.augmentation import MILBenchAugmentations
 from mtil.demos import get_demos_meta, make_loader_mt
+from mtil.domain_transfer import BinaryDomainLossModule
 from mtil.models import MultiHeadPolicyNet
 from mtil.reward_injection_wrappers import RewardEvaluatorMT
 from mtil.sample_mux import MuxTaskModelWrapper, make_mux_sampler
-from mtil.utils.misc import (
-    CPUListParamType, load_state_dict_or_model, sample_cpu_list,
-    sane_click_init, set_seeds)
+from mtil.utils.misc import (CPUListParamType, load_state_dict_or_model,
+                             sample_cpu_list, sane_click_init, set_seeds)
 from mtil.utils.rlpyt import get_policy_spec_milbench, make_logger_ctx
 
 
@@ -118,10 +118,11 @@ def cli():
 @click.option('--disc-use-bn/--no-disc-use-bn',
               default=True,
               help='should discriminator use batch norm?')
-@click.option("--ppo-aug",
-              # TODO: add choices for this too (see --disc-aug note)
-              default="none",
-              help="augmentations to use for PPO (if any)")
+@click.option(
+    "--ppo-aug",
+    # TODO: add choices for this too (see --disc-aug note)
+    default="none",
+    help="augmentations to use for PPO (if any)")
 @click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
 @click.option('--ppo-gamma', default=0.95, help='PPO discount factor (gamma)')
 @click.option('--ppo-lambda', default=0.95, help='PPO GAE lamdba')
@@ -139,10 +140,11 @@ def cli():
               default=1.0,
               help="weight of transfer envs relative to demo envs when making "
               "trajectory sampler (>1 is more weight, <1 is less weight)")
-@click.option("--transfer-disc-weight",
+@click.option("--transfer-loss-weight",
               default=1e-1,
               help='transfer loss weight for disc. (with --transfer-variant)')
 @click.option("--transfer-disc-anneal/--no-transfer-disc-anneal",
+              # TODO: make this also work for the policy
               default=False,
               help="anneal disc transfer loss from 0 to whatever "
               "--transfer-disc-weight is")
@@ -171,7 +173,7 @@ def main(
         disc_use_bn,
         disc_net_attn,
         transfer_variants,
-        transfer_disc_weight,
+        transfer_loss_weight,
         transfer_disc_anneal,
         transfer_pol_batch_weight,
         danger_debug_reward_weight,
@@ -237,11 +239,10 @@ def main(
         **get_policy_spec_milbench(env_metas),
     }
     policy_ctor = MultiHeadPolicyNet
-    ppo_agent = CategoricalPgAgent(
-        ModelCls=MuxTaskModelWrapper,
-        model_kwargs=dict(
-            model_ctor=policy_ctor,
-            model_kwargs=policy_kwargs))
+    ppo_agent = CategoricalPgAgent(ModelCls=MuxTaskModelWrapper,
+                                   model_kwargs=dict(
+                                       model_ctor=policy_ctor,
+                                       model_kwargs=policy_kwargs))
 
     print("Setting up discriminator/reward model")
     discriminator_mt = MILBenchDiscriminatorMT(
@@ -255,7 +256,18 @@ def main(
         attention=disc_net_attn,
         use_bn=disc_use_bn,
     ).to(dev)
-    reward_model_mt = RewardModel(discriminator_mt).to(dev)
+
+    if not transfer_variants and transfer_loss_weight:
+        print("No xfer variants supplied, setting xfer disc loss term to zero")
+        transfer_loss_weight = 0.0
+    if transfer_variants and transfer_loss_weight:
+        xfer_adv_module = BinaryDomainLossModule(
+            discriminator_mt.ret_feats_dim).to(dev)
+    else:
+        xfer_adv_module = None
+
+    reward_model_mt = RewardModel(discriminator_mt, xfer_adv_module,
+                                  transfer_loss_weight).to(dev)
     reward_evaluator_mt = RewardEvaluatorMT(
         task_ids_and_names=task_ids_and_demo_env_names,
         reward_model=reward_model_mt,
@@ -266,25 +278,7 @@ def main(
         # the PPO run that I got to run with a
         # manually-defined reward.
         target_std=0.01)
-    # TODO: figure out what pol_batch_size should be/do, and what relation it
-    # should have with sampler batch size
 
-    # Stable Baselines hyperparams:
-    # gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=0.00025,
-    # vf_coef=0.5, max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4,
-    # cliprange=0.2, cliprange_vf=None
-    #
-    # Default rlpyt hyperparams:
-    # discount=0.99, learning_rate=0.001, value_loss_coeff=1.0,
-    # entropy_loss_coeff=0.01, clip_grad_norm=1.0,
-    # initial_optim_state_dict=None, gae_lambda=1, minibatches=4, epochs=4,
-    # ratio_clip=0.1, linear_lr_schedule=True, normalize_advantage=False
-    #
-    # gae_lambda is probably doing a lot of work here, especially if we're
-    # using some funky way of computing return for our partial traces. I doubt
-    # value_loss_coeff and clip_grad_norm make much difference, since it's only
-    # a factor of 2 change. cliprange difference might matter, but IDK. n_steps
-    # will also matter a lot since it's so low by default in rlpyt (16).
     ppo_hyperparams = dict(
         learning_rate=ppo_lr,
         discount=ppo_gamma,
@@ -309,8 +303,9 @@ def main(
         raise ValueError(f"unsupported augmentation mode '{ppo_aug}'")
     if ppo_aug_opts:
         print("Policy augmentations:", ", ".join(ppo_aug_opts))
-        ppo_aug_model = MILBenchAugmentations(**{k: True for k in ppo_aug_opts}) \
-            .to(dev)
+        ppo_aug_model = MILBenchAugmentations(
+            **{k: True
+               for k in ppo_aug_opts}).to(dev)
     else:
         print("No policy augmentations")
         ppo_aug_model = None
@@ -334,9 +329,6 @@ def main(
     else:
         print("No discriminator augmentations")
         aug_model = None
-    if not transfer_variants and transfer_disc_weight:
-        print("No xfer variants supplied, setting xfer disc loss term to zero")
-        transfer_disc_weight = 0.0
     gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
                                discrim_model=discriminator_mt,
                                buffer_num_samples=max(
@@ -347,8 +339,9 @@ def main(
                                dev=dev,
                                aug_model=aug_model,
                                lr=disc_lr,
-                               xfer_adv_weight=transfer_disc_weight,
-                               xfer_adv_anneal=transfer_disc_anneal)
+                               xfer_adv_weight=transfer_loss_weight,
+                               xfer_adv_anneal=transfer_disc_anneal,
+                               xfer_adv_module=xfer_adv_module)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards

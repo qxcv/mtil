@@ -16,7 +16,6 @@ from torch import nn
 import torch.nn.functional as F
 
 from mtil.demos import make_loader_mt
-from mtil.domain_transfer import BinaryDomainLossModule
 from mtil.models import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
                          MultiTaskAffineLayer)
 from mtil.utils.misc import tree_map
@@ -168,21 +167,48 @@ class MILBenchDiscriminatorMT(nn.Module):
 class RewardModel(nn.Module):
     """Takes a binary discriminator module producing logits (with high = real
     demo)."""
-    def __init__(self, discrim):
+    def __init__(self, discrim, domain_xfer_model, domain_xfer_weight):
         super().__init__()
         self.discrim = discrim
+        self.domain_xfer_model = domain_xfer_model
+        self.domain_xfer_weight = domain_xfer_weight
+        if self.domain_xfer_weight:
+            assert domain_xfer_model is not None
 
-    def forward(self, obs, act, *args, **kwargs):
+    def forward(self,
+                obs,
+                act,
+                task_ids=None,
+                variant_ids=None,
+                *args,
+                **kwargs):
         """GAIL policy reward, without entropy bonus (should be introduced
         elsewhere). Policy should maximise this."""
-        sigmoid_logits = self.discrim(obs, act, *args, **kwargs)
-        # In the GAIL paper they use this as the cost (i.e. they minimise it).
-        # I'm maximising it to be consistent with the reference implementation,
-        # where the conventions for discriminator output are reversed (so high
-        # = expert & low = novice by default, although they do also have a
-        # switch that can flip the convention for environments with early
-        # termination).
-        rewards = F.logsigmoid(sigmoid_logits)
+        if self.domain_xfer_weight:
+            sigmoid_logits, discrim_features = self.discrim(obs,
+                                                            act,
+                                                            *args,
+                                                            return_feats=True,
+                                                            **kwargs)
+            base_rewards = F.logsigmoid(sigmoid_logits)
+            # want to max. loss of model that distinguishes demo from test
+            # variants
+            xfer_is_demo_labels = (obs.variant_id == 0).to(torch.float)
+            xfer_losses, _ = self.domain_xfer_model(discrim_features,
+                                                    xfer_is_demo_labels,
+                                                    reduce_loss=False)
+            assert xfer_losses.shape == base_rewards.shape, \
+                (xfer_losses.shape, base_rewards.shape)
+            rewards = base_rewards + self.domain_xfer_weight * xfer_losses
+        else:
+            sigmoid_logits = self.discrim(obs, act, *args, **kwargs)
+            # In the GAIL paper they use this as the cost (i.e. they minimise
+            # it). I'm maximising it to be consistent with the reference
+            # implementation, where the conventions for discriminator output
+            # are reversed (so high = expert & low = novice by default,
+            # although they do also have a switch that can flip the convention
+            # for environments with early termination).
+            rewards = F.logsigmoid(sigmoid_logits)
         return rewards
 
 
@@ -228,7 +254,7 @@ def _compute_gail_stats(disc_logits, is_real_labels):
 class GAILOptimiser:
     def __init__(self, *, dataset_mt, discrim_model, buffer_num_samples,
                  batch_size, updates_per_itr, dev, aug_model, xfer_adv_weight,
-                 xfer_adv_anneal, lr):
+                 xfer_adv_anneal, xfer_adv_module, lr):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -243,8 +269,8 @@ class GAILOptimiser:
         # if xfer_disc_anneal is True, then we anneal from 0 to 1
         self.xfer_disc_anneal = xfer_adv_anneal
         if self.xfer_adv_weight > 0:
-            self.xfer_adv_model = BinaryDomainLossModule(
-                discrim_model.ret_feats_dim).to(self.dev)
+            assert xfer_adv_module is not None
+            self.xfer_adv_model = xfer_adv_module
             all_params = it.chain(self.model.parameters(),
                                   self.xfer_adv_model.parameters())
             self.xfer_replay_buffer = None
