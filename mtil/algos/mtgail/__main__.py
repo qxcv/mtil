@@ -64,7 +64,7 @@ def cli():
               help="batch size for discriminator training")
 @click.option(
     "--disc-up-per-iter",
-    default=16,  # surprisingly, benefits from MORE updates
+    default=4,  # surprisingly, benefits from MORE updates
     help="number of discriminator steps per RL step")
 @click.option('--disc-replay-mult',
               type=int,
@@ -113,6 +113,10 @@ def cli():
 @click.option('--disc-use-bn/--no-disc-use-bn',
               default=True,
               help='should discriminator use batch norm?')
+@click.option("--ppo-aug",
+              # TODO: add choices for this too (see --disc-aug note)
+              default="none",
+              help="augmentations to use for PPO (if any)")
 @click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
 @click.option('--ppo-gamma', default=0.95, help='PPO discount factor (gamma)')
 @click.option('--ppo-lambda', default=0.95, help='PPO GAE lamdba')
@@ -158,6 +162,7 @@ def main(
         omit_noop,
         disc_replay_mult,
         disc_aug,
+        ppo_aug,
         disc_use_bn,
         disc_net_attn,
         transfer_variants,
@@ -282,9 +287,24 @@ def main(
             dataset_mt, max(16, min(64, sampler_batch_T * sampler_batch_B)))
     else:
         ppo_loader_mt = None
+
+    # FIXME: abstract code for constructing augmentation model from presets
+    try:
+        ppo_aug_opts = MILBenchAugmentations.PRESETS[ppo_aug]
+    except KeyError:
+        raise ValueError(f"unsupported augmentation mode '{ppo_aug}'")
+    if ppo_aug_opts:
+        print("Policy augmentations:", ", ".join(ppo_aug_opts))
+        ppo_aug_model = MILBenchAugmentations(**{k: True for k in ppo_aug_opts}) \
+            .to(dev)
+    else:
+        print("No policy augmentations")
+        ppo_aug_model = None
+
     ppo_algo = BCCustomRewardPPO(bc_loss_coeff=bc_loss,
                                  expert_traj_loader=ppo_loader_mt,
                                  true_reward_weight=danger_debug_reward_weight,
+                                 aug_model=ppo_aug_model,
                                  **ppo_hyperparams)
     ppo_algo.set_reward_evaluator(reward_evaluator_mt)
 
