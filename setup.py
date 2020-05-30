@@ -12,8 +12,8 @@ setup(
         # I have my own fork that I periodically make changes to
         ('rlpyt @ git+https://github.com/qxcv/rlpyt.git'
          '@d2965f7219a7a5d25c9de32102237164fea0e00c'),
-        'torch>=1.4.0',
-        'torchvision>=0.4.2',
+        'torch>=1.4.0,<1.5.0',
+        'torchvision>=0.4.2,<0.6.0',
         'pyprind>=2.11.2',
         # kornia fork, updated to allow me to pass in a border_mode for affine
         # augmentation
