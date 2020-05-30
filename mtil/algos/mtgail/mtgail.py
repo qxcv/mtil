@@ -341,6 +341,7 @@ class GAILOptimiser:
                 sub_batch_size)
             pol_replay_samples = torchify_buffer(pol_replay_samples)
             novice_obs = pol_replay_samples.all_observation
+
             if self.xfer_adv_model:
                 # add a bunch of of domain transfer samples
                 xfer_replay_samples = self.xfer_replay_buffer.sample_batch(
@@ -363,10 +364,12 @@ class GAILOptimiser:
                                       pol_replay_samples.all_action],
                                      dim=0) \
                     .to(self.dev)
+
             if self.aug_model is not None:
                 # augmentations
                 aug_frames = self.aug_model(all_obs.observation)
                 all_obs = all_obs._replace(observation=aug_frames)
+
             make_ones = functools.partial(torch.ones,
                                           dtype=torch.float32,
                                           device=self.dev)
@@ -381,6 +384,7 @@ class GAILOptimiser:
                     make_zeros(sub_batch_size),
                 ],
                 dim=0)
+
             if self.xfer_adv_model:
                 # apply domain transfer loss to the transfer samples, then
                 # remove them

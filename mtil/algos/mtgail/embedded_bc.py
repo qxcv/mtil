@@ -90,7 +90,9 @@ class BehaviouralCloningPPOMixin:
                 # NOTE: if not recurrent, will lose leading T dim, should be
                 # OK.
                 if self.expert_batch_iter:
-                    bc_task_ids, bc_obs, bc_acts = next(self.expert_batch_iter)
+                    bc_batch_dict = next(self.expert_batch_iter)
+                    bc_obs = bc_batch_dict['obs']
+                    bc_acts = bc_batch_dict['acts']
                     assert not torch.is_floating_point(bc_acts), bc_acts
                     bc_acts = bc_acts.long()
                 else:
