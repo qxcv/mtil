@@ -96,8 +96,6 @@ class BehaviouralCloningPPOMixin:
                     assert not torch.is_floating_point(bc_acts), bc_acts
                     bc_acts = bc_acts.long()
                 else:
-                    # 2020-03-29: bc_task_ids is unused, so commenting it out
-                    # bc_task_ids = None
                     bc_obs = None
                     bc_acts = None
                 loss, entropy, perplexity = self.loss(
