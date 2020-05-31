@@ -533,6 +533,7 @@ def just_print(run_args, run_kwargs, wait=None):
     help='connect Ray to this Redis DB instead of starting new cluster')
 @click.option('--ray-ncpus',
               default=None,
+              type=int,
               help='number of CPUs to use if starting new Ray instance')
 @click.option('--job-ngpus',
               default=0.3,
@@ -542,6 +543,7 @@ def just_print(run_args, run_kwargs, wait=None):
               help='number of GPUs per eval job (can be fractional)')
 @click.option('--job-nworkers',
               default=None,
+              type=int,
               help='number of CPU workers per job')
 @click.argument("spec")
 def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
