@@ -144,7 +144,7 @@ def generate_core_list(block_size):
 #     stdout_path = os.path.join(full_out_dir, 'stdout.log')
 #     stderr_path = os.path.join(full_out_dir, 'stderr.log')
 #     # bash witchcraft from
-#     # https://stackoverflow.com/questions/692000/how-do-i-write-stderr-to-a-file-while-using-tee-with-a-pipe
+#     # https://stackoverflow.com/questions/692000/how-do-i-write-stderr-to-a-file-while-using-tee-with-a-pipe  # noqa: E501
 #     magic = [
 #         '>',
 #         '>(',
@@ -185,11 +185,12 @@ def gen_command_gail(*,
                      n_steps=None,
                      log_interval_steps=1e4,
                      trans_env_names=(),
+                     child_xvfb,
                      cpu_list,
                      **kwargs):
     extras = parse_unknown_args(**kwargs)
     cmd_parts = [
-        *("xvfb-run -a python -m mtil.algos.mtgail").split(),
+        *("python -m mtil.algos.mtgail").split(),
         "--out-dir",
         out_root,
         "--run-name",
@@ -206,6 +207,8 @@ def gen_command_gail(*,
         preproc,
         *extras,
     ]
+    if child_xvfb:
+        cmd_parts = ["xvfb-run", "-a"] + cmd_parts
     if n_steps is not None:
         assert n_steps == int(n_steps), n_steps
         cmd_parts.extend(['--total-n-steps', str(int(n_steps))])
@@ -225,6 +228,7 @@ def gen_command_bc(*,
                    eval_n_traj=5,
                    snapshot_gap=1,
                    trans_env_names=(),
+                   child_xvfb,
                    cpu_list,
                    **kwargs):
     extras = parse_unknown_args(**kwargs)
@@ -232,8 +236,6 @@ def gen_command_bc(*,
         f"transfer envs not yet supported for BC, but got transfer env " \
         f"names '{trans_env_names}'"
     cmd_parts = [
-        "xvfb-run",
-        "-a",
         "python",
         "-m",
         "mtil.algos.mtbc",
@@ -256,15 +258,16 @@ def gen_command_bc(*,
         preproc,
         *extras,
     ]
+    if child_xvfb:
+        cmd_parts = ["xvfb-run", "-a"] + cmd_parts
     cmd_parts.extend(demo_paths)
     out_dir = os.path.join(out_root, f'run_{run_name}')
     return cmd_parts, out_dir
 
 
-def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name, *, cpu_list):
+def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name, *, cpu_list,
+                  child_xvfb):
     new_cmd = [
-        "xvfb-run",
-        "-a",
         "python",
         "-m",
         "mtil.algos.mtbc",
@@ -286,6 +289,8 @@ def make_eval_cmd(run_name, snap_dir, env_shorthand, env_name, *, cpu_list):
         "--load-latest",
         os.path.join(snap_dir, 'itr_LATEST.pkl'),
     ]
+    if child_xvfb:
+        new_cmd = ["xvfb-run", "-a"] + new_cmd
     return new_cmd
 
 
@@ -380,7 +385,7 @@ def select_subset(collection, n, rng):
 def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                fine_tune_args, nseeds, suffix, out_dir, trans_variants, ntraj,
                env_subset, preproc, nworkers, dry_run, job_ngpus,
-               job_ngpus_eval):
+               job_ngpus_eval, child_xvfb):
     if dry_run:
         call_remote = ray.remote(just_print)
         call_remote_eval = ray.remote(just_print)
@@ -424,6 +429,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                                        out_root=out_dir,
                                        trans_env_names=mt_trans_variants,
                                        preproc=preproc,
+                                       child_xvfb=child_xvfb,
                                        cpu_list=generate_core_list(nworkers),
                                        **args)
             mt_train_handle = call_remote.remote((mt_cmd, ), {}, None)
@@ -440,6 +446,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                     mt_dir,
                     task,
                     env_name,
+                    child_xvfb=child_xvfb,
                     cpu_list=generate_core_list(nworkers))
                 # pass in mt_train_handle as an ignored argument in order to
                 # create artificial dependence on earlier task
@@ -464,6 +471,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                         trans_env_names=ft_trans_variants,
                         cpu_list=generate_core_list(nworkers),
                         preproc=preproc,
+                        child_xvfb=child_xvfb,
                         load_policy=load_path,
                         **fine_tune_args)
                     ft_handle = call_remote.remote((ft_cmd, ), {},
@@ -474,6 +482,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                         ft_dir,
                         task,
                         chosen_env_names[task],
+                        child_xvfb=child_xvfb,
                         cpu_list=generate_core_list(nworkers))
                     ft_eval_handle = call_remote_eval.remote((ft_eval_cmd, ),
                                                              {}, ft_handle)
@@ -500,6 +509,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                     out_root=out_dir,
                     trans_env_names=st_trans_variants,
                     preproc=preproc,
+                    child_xvfb=child_xvfb,
                     cpu_list=generate_core_list(nworkers),
                     **args)
                 st_train_handle = call_remote.remote((st_cmd, ), {}, None)
@@ -509,6 +519,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                     st_dir,
                     task,
                     chosen_env_names[task],
+                    child_xvfb=child_xvfb,
                     cpu_list=generate_core_list(nworkers))
                 st_test_handle = call_remote_eval.remote((st_eval_cmd, ), {},
                                                          st_train_handle)
@@ -569,9 +580,12 @@ def just_print(run_args, run_kwargs, wait=None):
               default=None,
               type=int,
               help='number of CPU workers per job')
+@click.option('--child-xvfb/--no-child-xvfb',
+              default=False,
+              help='whether to spawn separate xvfb instance for each child')
 @click.argument("spec")
 def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
-         job_ngpus_eval, job_nworkers, dry_run):
+         job_ngpus_eval, job_nworkers, dry_run, child_xvfb):
     """Execute some experiments with Ray."""
     # spin up Ray cluster
     if job_nworkers is None:
@@ -606,6 +620,7 @@ def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
                                  out_dir=out_dir,
                                  nworkers=job_nworkers,
                                  dry_run=dry_run,
+                                 child_xvfb=child_xvfb,
                                  job_ngpus=job_ngpus,
                                  job_ngpus_eval=job_ngpus_eval)
         all_handles.extend(new_handles)
