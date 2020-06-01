@@ -189,7 +189,7 @@ def gen_command_gail(*,
                      **kwargs):
     extras = parse_unknown_args(**kwargs)
     cmd_parts = [
-        *("xvfb-run -a python -m mtil.algos.mtgail").split(),
+        *("python -m mtil.algos.mtgail").split(),
         "--out-dir",
         out_root,
         "--run-name",
@@ -232,8 +232,6 @@ def gen_command_bc(*,
         f"transfer envs not yet supported for BC, but got transfer env " \
         f"names '{trans_env_names}'"
     cmd_parts = [
-        "xvfb-run",
-        "-a",
         "python",
         "-m",
         "mtil.algos.mtbc",

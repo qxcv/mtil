@@ -4,7 +4,7 @@
 
 ### BC METHODS
 
-# Single-task (+ ablations)
+# Basic MT/ST methods
 
 bc-mt:
   algo: bc
@@ -17,6 +17,51 @@ bc-st:
   multi: false
   args:
     eval_n_traj: 1
+
+# Alternate MT method (fine-tuning)
+
+bc-mt-ft:
+  algo: bc
+  multi: true
+  fine-tune: true
+  fine-tune-args:
+    eval_n_traj: 1
+    total_n_batches: 10000
+  args:
+    eval_n_traj: 1
+    total_n_batches: 5000
+
+# Demonstration count ablations
+
+bc-mt-traj-1:
+  algo: bc
+  multi: true
+  ntraj: 1
+  args:
+    eval_n_traj: 1
+
+bc-st-traj-1:
+  algo: bc
+  multi: false
+  ntraj: 1
+  args:
+    eval_n_traj: 1
+
+bc-mt-traj-25:
+  algo: bc
+  multi: true
+  ntraj: 25
+  args:
+    eval_n_traj: 1
+
+bc-st-traj-25:
+  algo: bc
+  multi: false
+  ntraj: 25
+  args:
+    eval_n_traj: 1
+
+# Augmentatin ablations
 
 bc-mt-aug-no-trans:
   algo: bc
