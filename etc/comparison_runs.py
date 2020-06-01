@@ -26,14 +26,14 @@ DEMO_PATH_PATTERNS = {
 # TODO: make the preprocessor configurable from the experiment file (but have a
 # default of LoRes4E or something)
 ENV_NAMES = {
-    'move-to-corner': 'MoveToCorner-Demo-LoRes4E-v0',
-    'move-to-region': 'MoveToRegion-Demo-LoRes4E-v0',
-    'match-regions': 'MatchRegions-Demo-LoRes4E-v0',
-    'find-dupe': 'FindDupe-Demo-LoRes4E-v0',
-    'cluster-colour': 'ClusterColour-Demo-LoRes4E-v0',
-    'cluster-shape': 'ClusterShape-Demo-LoRes4E-v0',
-    'fix-colour': 'FixColour-Demo-LoRes4E-v0',
-    'make-line': 'MakeLine-Demo-LoRes4E-v0',
+    'move-to-corner': 'MoveToCorner-Demo-{preproc}-v0',
+    'move-to-region': 'MoveToRegion-Demo-{preproc}-v0',
+    'match-regions': 'MatchRegions-Demo-{preproc}-v0',
+    'find-dupe': 'FindDupe-Demo-{preproc}-v0',
+    'cluster-colour': 'ClusterColour-Demo-{preproc}-v0',
+    'cluster-shape': 'ClusterShape-Demo-{preproc}-v0',
+    'fix-colour': 'FixColour-Demo-{preproc}-v0',
+    'make-line': 'MakeLine-Demo-{preproc}-v0',
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 NUM_GPUS = 4
@@ -41,6 +41,8 @@ DEFAULT_NUM_SEEDS = 5
 BASE_START_SEED = 3255779925
 # default number of trajectories for training; can go up to 25
 DEFAULT_NUM_TRAJ = 10
+# see also: LoRes4A, LoRes3EA, etc.
+DEFAULT_PREPROC = 'LoRes4E'
 
 # FIXME: I had to vendor EnvName and _ENV_NAME_RE from MILBench because
 # directly importing from MILBench loads Pyglet, and Pyglet tries to make an
@@ -179,6 +181,7 @@ def gen_command_gail(*,
                      run_name,
                      out_root,
                      seed,
+                     preproc,
                      n_steps=None,
                      log_interval_steps=1e4,
                      trans_env_names=(),
@@ -199,6 +202,8 @@ def gen_command_gail(*,
         str(log_interval_steps),
         "--cpu-list",
         cpu_list,
+        "--add-preproc",
+        preproc,
         *extras,
     ]
     if n_steps is not None:
@@ -216,6 +221,7 @@ def gen_command_bc(*,
                    run_name,
                    out_root,
                    seed,
+                   preproc,
                    eval_n_traj=5,
                    snapshot_gap=1,
                    trans_env_names=(),
@@ -246,6 +252,8 @@ def gen_command_bc(*,
         str(snapshot_gap),
         "--cpu-list",
         cpu_list,
+        "--add-preproc",
+        preproc,
         *extras,
     ]
     cmd_parts.extend(demo_paths)
@@ -325,6 +333,11 @@ def parse_expts_file(file_path):
         trans_variants = run_dict.pop('transfer-variants', [])
         assert isinstance(trans_variants, list)
 
+        preproc = run_dict.pop('preproc', DEFAULT_PREPROC)
+        assert isinstance(preproc, str)
+
+        # we apply the preprocessor to all env names immediately, rather than
+        # returning it
         env_subset = run_dict.pop('env-subset', list(ENV_NAMES.keys()))
         assert isinstance(env_subset, list) \
             and len(set(env_subset)) == len(env_subset)\
@@ -347,6 +360,7 @@ def parse_expts_file(file_path):
             'trans_variants': trans_variants,
             'ntraj': ntraj,
             'env_subset': env_subset,
+            'preproc': preproc,
             'nseeds': nseeds,
         })
 
@@ -365,7 +379,8 @@ def select_subset(collection, n, rng):
 
 def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                fine_tune_args, nseeds, suffix, out_dir, trans_variants, ntraj,
-               env_subset, nworkers, dry_run, job_ngpus, job_ngpus_eval):
+               env_subset, preproc, nworkers, dry_run, job_ngpus,
+               job_ngpus_eval):
     if dry_run:
         call_remote = ray.remote(just_print)
         call_remote_eval = ray.remote(just_print)
@@ -373,6 +388,12 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
         call_remote = ray.remote(num_gpus=job_ngpus)(run_check_wrapper)
         call_remote_eval = ray.remote(
             num_gpus=job_ngpus_eval)(run_check_wrapper)
+
+    # insert preprocessor into full env names
+    chosen_env_names = collections.OrderedDict([
+        (shorthand, ENV_NAMES[shorthand].format(preproc=preproc))
+        for shorthand in sorted(env_subset)
+    ])
 
     seeds = generate_seeds(nseeds)
     all_handles = []
@@ -385,7 +406,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
             mt_run_name = f"{run_name}-{suffix}-s{seed}"
             demo_paths = []
             per_task_paths = {}
-            for expt in sorted(env_subset):
+            for expt in sorted(chosen_env_names):
                 globbed = glob.glob(
                     os.path.expanduser(DEMO_PATH_PATTERNS[expt]))
                 chosen = select_subset(globbed, ntraj, rng)
@@ -393,15 +414,16 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                 per_task_paths[expt] = chosen
 
             mt_trans_variants = [
-                insert_variant(ENV_NAMES[expt], variant)
+                insert_variant(chosen_env_names[expt], variant)
                 for variant in trans_variants
-                for expt in sorted(DEMO_PATH_PATTERNS.keys())
+                for expt in sorted(chosen_env_names)
             ]
             mt_cmd, mt_dir = generator(demo_paths=demo_paths,
                                        run_name=mt_run_name,
                                        seed=seed,
                                        out_root=out_dir,
                                        trans_env_names=mt_trans_variants,
+                                       preproc=preproc,
                                        cpu_list=generate_core_list(nworkers),
                                        **args)
             mt_train_handle = call_remote.remote((mt_cmd, ), {}, None)
@@ -411,8 +433,8 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
             # experiments
             load_path = os.path.join(mt_dir, 'itr_LATEST.pkl')
 
-            for task in sorted(env_subset):
-                env_name = ENV_NAMES[task]
+            for task in sorted(chosen_env_names):
+                env_name = chosen_env_names[task]
                 mt_eval_cmd = make_eval_cmd(
                     run_name,
                     mt_dir,
@@ -430,7 +452,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                     ft_run_name = f"{run_name}-ft-{task}-{suffix}-s{seed}"
                     demo_paths = per_task_paths[task]
                     ft_trans_variants = [
-                        insert_variant(ENV_NAMES[task], variant)
+                        insert_variant(chosen_env_names[task], variant)
                         for variant in trans_variants
                     ]
 
@@ -441,6 +463,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                         out_root=out_dir,
                         trans_env_names=ft_trans_variants,
                         cpu_list=generate_core_list(nworkers),
+                        preproc=preproc,
                         load_policy=load_path,
                         **fine_tune_args)
                     ft_handle = call_remote.remote((ft_cmd, ), {},
@@ -450,7 +473,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                         ft_run_name,
                         ft_dir,
                         task,
-                        ENV_NAMES[task],
+                        chosen_env_names[task],
                         cpu_list=generate_core_list(nworkers))
                     ft_eval_handle = call_remote_eval.remote((ft_eval_cmd, ),
                                                              {}, ft_handle)
@@ -460,13 +483,13 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
 
         else:
             # one test command for each of N train commands
-            for task in sorted(env_subset):
+            for task in sorted(chosen_env_names):
                 st_run_name = f"{run_name}-{task}-{suffix}-s{seed}"
                 demo_paths_all = glob.glob(
                     os.path.expanduser(DEMO_PATH_PATTERNS[task]))
                 demo_paths = select_subset(demo_paths_all, ntraj, rng)
                 st_trans_variants = [
-                    insert_variant(ENV_NAMES[task], variant)
+                    insert_variant(chosen_env_names[task], variant)
                     for variant in trans_variants
                 ]
 
@@ -476,6 +499,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                     seed=seed,
                     out_root=out_dir,
                     trans_env_names=st_trans_variants,
+                    preproc=preproc,
                     cpu_list=generate_core_list(nworkers),
                     **args)
                 st_train_handle = call_remote.remote((st_cmd, ), {}, None)
@@ -484,7 +508,7 @@ def spawn_runs(*, run_name, algo, generator, is_multi_task, fine_tune, args,
                     run_name,
                     st_dir,
                     task,
-                    ENV_NAMES[task],
+                    chosen_env_names[task],
                     cpu_list=generate_core_list(nworkers))
                 st_test_handle = call_remote_eval.remote((st_eval_cmd, ), {},
                                                          st_train_handle)
