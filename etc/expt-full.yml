@@ -31,6 +31,22 @@ bc-mt-ft:
     eval_n_traj: 1
     total_n_batches: 5000
 
+# Allocentric view ablations
+
+bc-mt-allo:
+  algo: bc
+  multi: true
+  preproc: LoRes4A
+  args:
+    eval_n_traj: 1
+
+bc-st-allo:
+  algo: bc
+  multi: false
+  preproc: LoRes4A
+  args:
+    eval_n_traj: 1
+
 # Demonstration count ablations
 
 bc-mt-traj-1:
@@ -61,7 +77,7 @@ bc-st-traj-25:
   args:
     eval_n_traj: 1
 
-# Augmentatin ablations
+# Augmentation ablations
 
 bc-mt-aug-no-trans:
   algo: bc
@@ -110,6 +126,8 @@ bc-st-aug-none:
 # (TODO: decide whether I want to include the full set of augmentation baselines
 # as well)
 
+## Standard MT/ST GAIL
+
 gail-mt:
   algo: gail
   multi: true
@@ -117,6 +135,20 @@ gail-mt:
 gail-st:
   algo: gail
   multi: false
+
+## Allocentric ablations
+
+gail-mt-allo:
+  algo: gail
+  preproc: LoRes4A
+  multi: true
+
+gail-st-allo:
+  algo: gail
+  preproc: LoRes4A
+  multi: false
+
+## Augmentation ablations
 
 gail-mt-aug-none:
   algo: gail
