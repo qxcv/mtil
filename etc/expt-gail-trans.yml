@@ -34,7 +34,7 @@ gail-trans-colour:
     total_n_steps: 2000000
     disc_up_per_iter: 4
     snapshot_gap: 20
-  env-subset: ["move-to-corner", "move-to-region", "match-regions", "find-dupe", "fix-colour"]
+  env-subset: ["move-to-corner", "move-to-region", "find-dupe", "fix-colour"]
   transfer-variants:
     - TestColour
 
@@ -47,7 +47,7 @@ gail-trans-layout:
     total_n_steps: 2000000
     disc_up_per_iter: 4
     snapshot_gap: 20
-  env-subset: ["move-to-corner", "move-to-region", "match-regions", "find-dupe", "fix-colour"]
+  env-subset: ["move-to-corner", "move-to-region", "find-dupe", "fix-colour"]
   transfer-variants:
     - TestLayout
 
