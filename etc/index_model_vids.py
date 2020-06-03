@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 import os
 import re
 
@@ -78,6 +78,13 @@ def render_table(task, task_dict, fp):
     print("</table>", file=fp)
 
 
+def build_link_list(link_dict):
+    parts = []
+    for task_name, html_file in link_dict.items():
+        parts.append(f'[<a href="{html_file}">{task_name}</a>]')
+    return f"<p>links: {' '.join(parts)}</p>"
+
+
 @click.command()
 @click.argument('root')
 def main(root):
@@ -87,12 +94,28 @@ def main(root):
     print("Building index")
     index = build_index(root)
 
-    with open(os.path.join(root, "index.html"), "w") as fp:
-        fp.write(PREAMBLE)
-        for task, task_dict in sorted(index.items()):
-            print("Processing task", task)
+    # figure out which files we're going to put data for each task in
+    link_dict = OrderedDict()
+    for task in sorted(index.keys()):
+        link_dict[task] = task + ".html"
+    link_list = build_link_list(link_dict)
+
+    # build task-specific HTML files
+    for task, task_dict in sorted(index.items()):
+        print("Processing task", task)
+        with open(os.path.join(root, link_dict[task]), "w") as fp:
+            fp.write(PREAMBLE.format(title="results for " + task))
             print(f"<h1>Results on {task}</h1>", file=fp)
+            print(link_list, file=fp)
             render_table(task, task_dict, fp)
+            fp.write(ENDING)
+
+    # also create an index file that links to each of those
+    print("Writing index")
+    with open(os.path.join(root, "index.html"), "w") as fp:
+        fp.write(PREAMBLE.format(title="results index"))
+        print("<h1>results index</h1>", file=fp)
+        print(link_list, file=fp)
         fp.write(ENDING)
 
     print(f"Done, try `pushd {root} && python3 -m http.server; popd`")
