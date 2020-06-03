@@ -12,10 +12,46 @@ PREAMBLE = """<!DOCTYPE html>
   <head>
     <meta charset="utf-8" />
     <title>%s</title>
-    <script>function syncVids() {
-        let videos = document.querySelectorAll("video");
-        for (let vid of videos) {vid.currentTime = 0; vid.play();}
-    }</script>
+    <script>
+        function syncVids() {
+            let videos = document.querySelectorAll("tr:not(.hidden) video");
+            for (let vid of videos) {
+                vid.currentTime = 0; vid.play();
+            }
+        }
+
+        function toggleShow(anchor) {
+            let elem = anchor;
+            while (elem.tagName != "TR" && elem != null) {
+                elem = elem.parentElement;
+            }
+            if (elem == null) {
+                console.error("could not find parent node of " + anchor);
+            }
+            let subVids = elem.querySelectorAll("video");
+            if (elem.classList.contains("hidden")) {
+                elem.classList.remove("hidden");
+                for (let v of subVids) {
+                    v.currentTime = 0;
+                    v.play();
+                }
+            } else {
+                elem.classList.add("hidden");
+                for (let v of subVids) {
+                    v.pause();
+                }
+            }
+        }
+    </script>
+
+    <style>
+        .hidden video {
+            display: none;
+        }
+        .hidden td {
+            background-colour: #aaa;
+        }
+    </style>
   </head>
   <body>
 """
@@ -64,7 +100,8 @@ def render_table(task, task_dict, fp):
     for alg, alg_cols in sorted(task_dict.items()):
         print("<tr>", file=fp)
 
-        print(f"<th>{alg}</th>", file=fp)
+        print(f'<th><a href="#" onclick="toggleShow(this)">{alg}</a></th>',
+              file=fp)
 
         for column in COLUMN_ORDER:
             vid_path = alg_cols.get(column.lower())
@@ -72,7 +109,7 @@ def render_table(task, task_dict, fp):
             if not vid_path:
                 contents = "-"
             else:
-                contents = "<video playsinline muted autoplay loop " \
+                contents = "<video playsinline muted loop " \
                     "controls width='320' height='128'>" \
                     f"<source src='{vid_path}' type='video/mp4' />" \
                     "</video>"
@@ -113,7 +150,7 @@ def main(root):
             fp.write(PREAMBLE % ("results for " + task))
             print(f"<h1>Results on {task}</h1>", file=fp)
             print(link_list, file=fp)
-            print('<p><a href="javascript:syncVids()">sync vids</a></p>',
+            print('<p><a href="#" onclick="syncVids()">sync vids</a></p>',
                   file=fp)
             render_table(task, task_dict, fp)
             fp.write(ENDING)
@@ -131,3 +168,4 @@ def main(root):
 
 if __name__ == '__main__':
     main()
+controls
