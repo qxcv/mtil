@@ -1,0 +1,14 @@
+# PERCEPTRON EXPERIMENT SET 2
+
+gail-trans-layout:
+  algo: gail
+  multi: false
+  args:
+    transfer_pol_batch_weight: 1.0
+    transfer_loss_weight: 0.1
+    total_n_steps: 4000000
+    disc_up_per_iter: 16
+    snapshot_gap: 20
+  env-subset: ["find-dupe", "fix-colour"]
+  transfer-variants:
+    - TestLayout

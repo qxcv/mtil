@@ -11,7 +11,11 @@ PREAMBLE = """<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Run videos</title>
+    <title>%s</title>
+    <script>function syncVids() {
+        let videos = document.querySelectorAll("video");
+        for (let vid of videos) {vid.currentTime = 0; vid.play();}
+    }</script>
   </head>
   <body>
 """
@@ -60,6 +64,8 @@ def render_table(task, task_dict, fp):
     for alg, alg_cols in sorted(task_dict.items()):
         print("<tr>", file=fp)
 
+        print(f"<th>{alg}</th>", file=fp)
+
         for column in COLUMN_ORDER:
             vid_path = alg_cols.get(column.lower())
             print("<td>", file=fp)
@@ -104,16 +110,18 @@ def main(root):
     for task, task_dict in sorted(index.items()):
         print("Processing task", task)
         with open(os.path.join(root, link_dict[task]), "w") as fp:
-            fp.write(PREAMBLE.format(title="results for " + task))
+            fp.write(PREAMBLE % ("results for " + task))
             print(f"<h1>Results on {task}</h1>", file=fp)
             print(link_list, file=fp)
+            print('<p><a href="javascript:syncVids()">sync vids</a></p>',
+                  file=fp)
             render_table(task, task_dict, fp)
             fp.write(ENDING)
 
     # also create an index file that links to each of those
     print("Writing index")
     with open(os.path.join(root, "index.html"), "w") as fp:
-        fp.write(PREAMBLE.format(title="results index"))
+        fp.write(PREAMBLE % "results index")
         print("<h1>results index</h1>", file=fp)
         print(link_list, file=fp)
         fp.write(ENDING)

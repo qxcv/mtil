@@ -1,0 +1,14 @@
+# HMM EXPERIMENT SET 1
+
+gail-trans-colour:
+  algo: gail
+  multi: false
+  args:
+    transfer_pol_batch_weight: 1.0
+    transfer_loss_weight: 0.1
+    total_n_steps: 4000000
+    disc_up_per_iter: 16
+    snapshot_gap: 20
+  env-subset: ["fix-colour", "find-dupe"]
+  transfer-variants:
+    - TestColour
