@@ -203,7 +203,7 @@ def make_env_tag(env_name):
 
 
 def strip_mb_preproc_name(env_name):
-    """Strip any preprocessor name from a MILBench env name."""
+    """Strip any preprocessor name from a MAGICAL env name."""
     en = EnvName(env_name)
     return '-'.join((en.name_prefix, en.demo_test_spec, en.version_suffix))
 

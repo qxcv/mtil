@@ -4,7 +4,7 @@ import collections
 
 # FIXME: is it even worth dealing with dicts? Instead should I just make
 # EVERYTHING into a namedarraytuple?
-from magical.baselines.saved_trajectories import (
+from magical.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
 from magical.benchmarks import EnvName
 import numpy as np
@@ -75,7 +75,7 @@ def make_tensor_dict_dataset(demo_trajs_by_env, omit_noop=False):
 
     if omit_noop:
         # omit action 0 (helps avoid the "agent does nothing initially" problem
-        # for MILBench)
+        # for MAGICAL)
         valid_inds = torch.squeeze(torch.nonzero(all_acts), 1)
         all_obs = tree_map(lambda t: t[valid_inds], all_obs)
         all_acts = all_acts[valid_inds]
@@ -204,13 +204,13 @@ def insert_task_source_ids(obs_seq, task_id, variant_id, source_id):
 
 
 def convert_obs_to_namedarraytuples(traj):
-    # If using an appropriate preprocessor (e.g. LoResStack4E), MILBench
+    # If using an appropriate preprocessor (e.g. LoResStack4E), MAGICAL
     # observations will be plain numpy ndarray, in which case we don't need to
     # do anything here
     if isinstance(traj.obs[0], np.ndarray):
         return traj
 
-    # Otherwise, all MILBench observations are dicts with "ego" and "allo"
+    # Otherwise, all MAGICAL observations are dicts with "ego" and "allo"
     # keys. We convert the observations to named(array)tuples so that it's
     # easier to work with them.
     fields = tuple(traj.obs[0].keys())

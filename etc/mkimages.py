@@ -7,7 +7,7 @@ import readline  # noqa: F401
 import click
 import gym
 import imageio
-from magical.baselines.saved_trajectories import load_demos
+from magical.saved_trajectories import load_demos
 from magical.benchmarks import (DEMO_ENVS_TO_TEST_ENVS_MAP, EnvName,
                                  register_envs)
 import numpy as np

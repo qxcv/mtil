@@ -7,7 +7,7 @@ import random
 
 import click
 import gym
-from magical.baselines.saved_trajectories import load_demos
+from magical.saved_trajectories import load_demos
 from magical.benchmarks import EnvName, register_envs
 import numpy as np
 import skimage

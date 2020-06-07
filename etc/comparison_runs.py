@@ -43,9 +43,9 @@ DEFAULT_NUM_TRAJ = 10
 # see also: LoRes4A, LoRes3EA, etc.
 DEFAULT_PREPROC = 'LoRes4E'
 
-# FIXME: I had to vendor EnvName and _ENV_NAME_RE from MILBench because
-# directly importing from MILBench loads Pyglet, and Pyglet tries to make an
-# XOrg window on import (?!), which breaks on the server without xvfb-run :(
+# FIXME: I had to vendor EnvName and _ENV_NAME_RE from MAGICAL because directly
+# importing from MAGICAL loads Pyglet, and Pyglet tries to make an XOrg window
+# on import (?!), which breaks on the server without xvfb-run :(
 _ENV_NAME_RE = re.compile(
     r'^(?P<name_prefix>[^-]+)(?P<demo_test_spec>-(Demo|Test[^-]*))'
     r'(?P<env_name_suffix>(-[^-]+)*)(?P<version_suffix>-v\d+)$')
