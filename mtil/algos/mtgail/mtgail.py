@@ -3,7 +3,7 @@ import copy
 import functools
 import itertools as it
 
-from milbench.benchmarks import EnvName
+from magical.benchmarks import EnvName
 import numpy as np
 from rlpyt.runners.minibatch_rl import MinibatchRl
 from rlpyt.utils.buffer import (buffer_from_example, buffer_func,
@@ -507,7 +507,7 @@ class GAILMinibatchRl(MinibatchRl):
                     itr)  # Might not be this agent sampling.
                 samples, traj_infos = self.sampler.obtain_samples(itr)
                 # label traj_infos with env IDs (this is specific to
-                # milbench/my multi-task thing)
+                # magical/my multi-task thing)
                 traj_infos = _label_traj_infos(traj_infos, self.variant_groups)
                 self.agent.train_mode(itr)
                 opt_info = self.algo.optimize_agent(itr, samples)

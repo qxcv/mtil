@@ -14,14 +14,14 @@ import ray
 import yaml
 
 DEMO_PATH_PATTERNS = {
-    'move-to-corner': '~/repos/milbench/demos-ea/move-to-corner-2020-03-*/*.pkl.gz',  # noqa: E501
-    'move-to-region': '~/repos/milbench/demos-ea/move-to-region-2020-04-*/*.pkl.gz',  # noqa: E501
-    'match-regions': '~/repos/milbench/demos-ea/match-regions-2020-05-*/*.pkl.gz',  # noqa: E501
-    'find-dupe': '~/repos/milbench/demos-ea/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
-    'cluster-colour': '~/repos/milbench/demos-ea/cluster-colour-2020-05-*/*.pkl.gz',  # noqa: E501
-    'cluster-shape': '~/repos/milbench/demos-ea/cluster-shape-2020-05-*/*.pkl.gz',  # noqa: E501
-    'fix-colour': '~/repos/milbench/demos-ea/fix-colour-2020-05-*/*.pkl.gz',  # noqa: E501
-    'make-line': '~/repos/milbench/demos-ea/make-line-2020-05-*/*.pkl.gz',  # noqa: E501
+    'move-to-corner': '~/repos/magical/demos-ea/move-to-corner-2020-03-*/*.pkl.gz',  # noqa: E501
+    'move-to-region': '~/repos/magical/demos-ea/move-to-region-2020-04-*/*.pkl.gz',  # noqa: E501
+    'match-regions': '~/repos/magical/demos-ea/match-regions-2020-05-*/*.pkl.gz',  # noqa: E501
+    'find-dupe': '~/repos/magical/demos-ea/find-dupe-2020-05-*/*.pkl.gz',  # noqa: E501
+    'cluster-colour': '~/repos/magical/demos-ea/cluster-colour-2020-05-*/*.pkl.gz',  # noqa: E501
+    'cluster-shape': '~/repos/magical/demos-ea/cluster-shape-2020-05-*/*.pkl.gz',  # noqa: E501
+    'fix-colour': '~/repos/magical/demos-ea/fix-colour-2020-05-*/*.pkl.gz',  # noqa: E501
+    'make-line': '~/repos/magical/demos-ea/make-line-2020-05-*/*.pkl.gz',  # noqa: E501
 }  # yapf: disable
 # TODO: make the preprocessor configurable from the experiment file (but have a
 # default of LoRes4E or something)
@@ -36,7 +36,6 @@ ENV_NAMES = {
     'make-line': 'MakeLine-Demo-{preproc}-v0',
 }
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-NUM_GPUS = 4
 DEFAULT_NUM_SEEDS = 5
 BASE_START_SEED = 3255779925
 # default number of trajectories for training; can go up to 25
@@ -44,16 +43,16 @@ DEFAULT_NUM_TRAJ = 10
 # see also: LoRes4A, LoRes3EA, etc.
 DEFAULT_PREPROC = 'LoRes4E'
 
-# FIXME: I had to vendor EnvName and _ENV_NAME_RE from MILBench because
-# directly importing from MILBench loads Pyglet, and Pyglet tries to make an
-# XOrg window on import (?!), which breaks on the server without xvfb-run :(
+# FIXME: I had to vendor EnvName and _ENV_NAME_RE from MAGICAL because directly
+# importing from MAGICAL loads Pyglet, and Pyglet tries to make an XOrg window
+# on import (?!), which breaks on the server without xvfb-run :(
 _ENV_NAME_RE = re.compile(
     r'^(?P<name_prefix>[^-]+)(?P<demo_test_spec>-(Demo|Test[^-]*))'
     r'(?P<env_name_suffix>(-[^-]+)*)(?P<version_suffix>-v\d+)$')
 
 
 class EnvName:
-    """Vendored version of milbench.benchmarks.EnvName."""
+    """Vendored version of magical.benchmarks.EnvName."""
     def __init__(self, env_name):
         match = _ENV_NAME_RE.match(env_name)
         if match is None:

@@ -8,7 +8,7 @@ import time
 
 import click
 import gym
-from milbench.evaluation import EvaluationProtocol, latexify_results
+from magical.evaluation import EvaluationProtocol, latexify_results
 import numpy as np
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.samplers.parallel.cpu.sampler import CpuSampler
@@ -28,7 +28,7 @@ from mtil.utils.misc import (
     CPUListParamType, load_state_dict_or_model, sample_cpu_list,
     sane_click_init, set_seeds)
 from mtil.utils.rlpyt import (
-    MILBenchGymEnv, get_policy_spec_milbench, make_logger_ctx)
+    MILBenchGymEnv, get_policy_spec_magical, make_logger_ctx)
 
 
 @click.group()
@@ -139,8 +139,8 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
         )
 
         # register original envs
-        import milbench
-        milbench.register_envs()
+        import magical
+        magical.register_envs()
 
         # TODO: split out part of the dataset for validation.
         demos_metas_dict = get_demos_meta(demo_paths=demos,
@@ -186,7 +186,7 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
                 'coord_conv': net_coord_conv,
                 'attention': net_attention,
                 'n_task_spec_layers': net_task_spec_layers,
-                **get_policy_spec_milbench(env_metas),
+                **get_policy_spec_magical(env_metas),
             }
             policy_ctor = MultiHeadPolicyNet
         agent = CategoricalPgAgent(ModelCls=MuxTaskModelWrapper,
@@ -347,8 +347,8 @@ def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
     visual debugging; see `testall` for quantitative evaluation."""
     set_seeds(seed)
 
-    import milbench
-    milbench.register_envs()
+    import magical
+    magical.register_envs()
 
     # build env
     if transfer_to:
@@ -498,8 +498,8 @@ def testall(state_dict_or_model_path, env_name, seed, fps, write_latex,
     # TODO: is there some way of factoring this init code out? Maybe put into
     # Click base command so that it gets run for `train`, `testall`, etc.
     set_seeds(seed)
-    import milbench
-    milbench.register_envs()
+    import magical
+    magical.register_envs()
 
     # for parallel GPU/CPU sampling
     mp.set_start_method('spawn')

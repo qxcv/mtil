@@ -121,20 +121,19 @@ bc-st-aug-none:
     eval_n_traj: 1
     aug_mode: none
 
-# Multi-task (+ ablations)
-
-# (TODO: decide whether I want to include the full set of augmentation baselines
-# as well)
-
 ## Standard MT/ST GAIL
 
 gail-mt:
   algo: gail
   multi: true
+  args:
+    disc_up_per_itr: 16
 
 gail-st:
   algo: gail
   multi: false
+  args:
+    disc_up_per_itr: 16
 
 ## Allocentric ablations
 
@@ -142,11 +141,15 @@ gail-mt-allo:
   algo: gail
   preproc: LoRes4A
   multi: true
+  args:
+    disc_up_per_itr: 16
 
 gail-st-allo:
   algo: gail
   preproc: LoRes4A
   multi: false
+  args:
+    disc_up_per_itr: 16
 
 ## Augmentation ablations
 
@@ -155,13 +158,16 @@ gail-mt-aug-none:
   multi: true
   args:
     disc_aug: none
+    disc_up_per_itr: 16
 
 gail-st-aug-none:
   algo: gail
   multi: false
   args:
     disc_aug: none
+    disc_up_per_itr: 16
 
+# "transfer GAIL" experiments (these didn't make it to the NeurIPS submission)
 # gail-trans:
 #   algo: gail
 #   multi: false

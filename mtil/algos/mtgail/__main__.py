@@ -3,7 +3,7 @@ that parts of the implementation can be pickled."""
 
 # 'import readline' is necessary to stop pdb.set_trace() from segfaulting in
 # rl_initialize when importing readline. Problematic import is
-# 'milbench.baselines.saved_trajectories' (putting this import after that means
+# 'magical.saved_trajectories' (putting this import after that means
 # the segfault still happens). Haven't had time to chase down.
 import multiprocessing as mp
 import os
@@ -25,7 +25,7 @@ from mtil.reward_injection_wrappers import RewardEvaluatorMT
 from mtil.sample_mux import MuxTaskModelWrapper, make_mux_sampler
 from mtil.utils.misc import (CPUListParamType, load_state_dict_or_model,
                              sample_cpu_list, sane_click_init, set_seeds)
-from mtil.utils.rlpyt import get_policy_spec_milbench, make_logger_ctx
+from mtil.utils.rlpyt import get_policy_spec_magical, make_logger_ctx
 
 
 @click.group()
@@ -205,8 +205,8 @@ def main(
     print(f"Using device {dev}, seed {seed}, affinity {affinity}")
 
     # register original envs
-    import milbench
-    milbench.register_envs()
+    import magical
+    magical.register_envs()
 
     if danger_override_env_name:
         raise NotImplementedError(
@@ -236,7 +236,7 @@ def main(
 
     policy_kwargs = {
         'env_ids_and_names': task_ids_and_demo_env_names,
-        **get_policy_spec_milbench(env_metas),
+        **get_policy_spec_magical(env_metas),
     }
     policy_ctor = MultiHeadPolicyNet
     ppo_agent = CategoricalPgAgent(ModelCls=MuxTaskModelWrapper,

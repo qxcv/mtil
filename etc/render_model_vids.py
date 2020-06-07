@@ -6,7 +6,7 @@ import readline  # noqa: F401 (saves the debugger!)
 
 import click
 import gym
-from milbench import DEMO_ENVS_TO_TEST_ENVS_MAP, EnvName, register_envs
+from magical import DEMO_ENVS_TO_TEST_ENVS_MAP, EnvName, register_envs
 import numpy as np
 import ray
 import skvideo.io as vidio

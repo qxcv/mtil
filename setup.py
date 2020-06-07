@@ -6,6 +6,8 @@ setup(
     version='0.0.1',
     packages=['mtil'],
     install_requires=[
+        # the MAGICAL benchmark that this suite is meant to solve :)
+        'magical @ git+https://github.com/qxcv/magical.git',
         'gym>=0.15.0',
         'Click>=7.0',
         'numpy>=1.17.4',
@@ -24,6 +26,9 @@ setup(
         'setproctitle>=1.1.10',
         'psutil>=5.6.5',
         'scikit-optimize>=0.7.4,<0.8.0',
-        # for final experiments
+        # for final experiments (& data collection)
         'PyYAML>=5.1.2',
+        'jupyterlab==1.2.*',
+        'pandas==0.25.*',
+        'scikit-video==1.1.*',
     ])

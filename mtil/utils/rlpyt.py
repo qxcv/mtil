@@ -3,7 +3,7 @@ import multiprocessing
 import os
 
 import gym
-from milbench import register_envs
+from magical import register_envs
 from rlpyt.envs.gym_schema import GymEnvWrapper
 from rlpyt.utils.collections import AttrDict
 from rlpyt.utils.logging import context as log_ctx
@@ -69,9 +69,9 @@ class MILBenchTrajInfo(AttrDict):
         return self
 
 
-def get_policy_spec_milbench(env_metas):
+def get_policy_spec_magical(env_metas):
     """Get `MultiHeadPolicyNet`'s `in_chans` and `n_actions` kwargs
-    automatically from env metadata from a MILBench environment. Does sanity
+    automatically from env metadata from a MAGICAL environment. Does sanity
     check to ensure that input & output shapes are the same for all envs."""
     obs_space = env_metas[0].observation_space
     act_space = env_metas[0].action_space
