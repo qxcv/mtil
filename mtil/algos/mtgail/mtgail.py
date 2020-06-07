@@ -3,7 +3,7 @@ import copy
 import functools
 import itertools as it
 
-from milbench.benchmarks import EnvName
+from magical.benchmarks import EnvName
 import numpy as np
 from rlpyt.runners.minibatch_rl import MinibatchRl
 from rlpyt.utils.buffer import (buffer_from_example, buffer_func,

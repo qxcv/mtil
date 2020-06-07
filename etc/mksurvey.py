@@ -7,8 +7,8 @@ import random
 
 import click
 import gym
-from milbench.baselines.saved_trajectories import load_demos
-from milbench.benchmarks import EnvName, register_envs
+from magical.baselines.saved_trajectories import load_demos
+from magical.benchmarks import EnvName, register_envs
 import numpy as np
 import skimage
 import skimage.io as skio

@@ -3,7 +3,7 @@ import multiprocessing
 import os
 
 import gym
-from milbench import register_envs
+from magical import register_envs
 from rlpyt.envs.gym_schema import GymEnvWrapper
 from rlpyt.utils.collections import AttrDict
 from rlpyt.utils.logging import context as log_ctx

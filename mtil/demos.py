@@ -4,9 +4,9 @@ import collections
 
 # FIXME: is it even worth dealing with dicts? Instead should I just make
 # EVERYTHING into a namedarraytuple?
-from milbench.baselines.saved_trajectories import (
+from magical.baselines.saved_trajectories import (
     load_demos, preprocess_demos_with_wrapper, splice_in_preproc_name)
-from milbench.benchmarks import EnvName
+from magical.benchmarks import EnvName
 import numpy as np
 from rlpyt.utils.collections import NamedArrayTupleSchema
 import torch

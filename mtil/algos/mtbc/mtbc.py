@@ -6,7 +6,7 @@ import collections
 import os
 import re
 
-from milbench.benchmarks import EnvName
+from magical.benchmarks import EnvName
 import numpy as np
 from rlpyt.utils.prog_bar import ProgBarCounter
 import torch

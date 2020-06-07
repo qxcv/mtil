@@ -8,7 +8,7 @@ import time
 
 import click
 import gym
-from milbench.evaluation import EvaluationProtocol, latexify_results
+from magical.evaluation import EvaluationProtocol, latexify_results
 import numpy as np
 from rlpyt.agents.pg.categorical import CategoricalPgAgent
 from rlpyt.samplers.parallel.cpu.sampler import CpuSampler
@@ -139,7 +139,7 @@ def train(demos, add_preproc, seed, batch_size, total_n_batches,
         )
 
         # register original envs
-        import milbench
+        import magical
         milbench.register_envs()
 
         # TODO: split out part of the dataset for validation.
@@ -347,7 +347,7 @@ def test(state_dict_or_model_path, env_name, det_pol, seed, fps, transfer_to):
     visual debugging; see `testall` for quantitative evaluation."""
     set_seeds(seed)
 
-    import milbench
+    import magical
     milbench.register_envs()
 
     # build env
@@ -498,7 +498,7 @@ def testall(state_dict_or_model_path, env_name, seed, fps, write_latex,
     # TODO: is there some way of factoring this init code out? Maybe put into
     # Click base command so that it gets run for `train`, `testall`, etc.
     set_seeds(seed)
-    import milbench
+    import magical
     milbench.register_envs()
 
     # for parallel GPU/CPU sampling

@@ -7,8 +7,8 @@ import readline  # noqa: F401
 import click
 import gym
 import imageio
-from milbench.baselines.saved_trajectories import load_demos
-from milbench.benchmarks import (DEMO_ENVS_TO_TEST_ENVS_MAP, EnvName,
+from magical.baselines.saved_trajectories import load_demos
+from magical.benchmarks import (DEMO_ENVS_TO_TEST_ENVS_MAP, EnvName,
                                  register_envs)
 import numpy as np
 import skimage
@@ -128,7 +128,7 @@ def remove_dupes(old_frames, thresh=1e-3):
 
 
 @click.command()
-@click.option('--dest', default='cs287h-data', help='destination dir')
+@click.option('--dest', default='image-data', help='destination dir')
 @click.argument("demos", nargs=-1, required=True)
 def main(demos, dest):
     """Make survey media/HTML from a given demonstration `demo`."""

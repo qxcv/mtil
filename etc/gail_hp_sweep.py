@@ -18,7 +18,7 @@ from skopt.space import space as opt_space
 # FIXME: don't make this relative to /home, but rather read it from cmdline or
 # (better yet) a config file
 DEMO_PATTERN \
-    = '~/repos/milbench/demos-simplified/match-regions-2020-03-01/*.pkl.gz'
+    = '~/repos/magical/demos-simplified/match-regions-2020-03-01/*.pkl.gz'
 
 
 def get_demo_paths():

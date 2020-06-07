@@ -205,7 +205,7 @@ def main(
     print(f"Using device {dev}, seed {seed}, affinity {affinity}")
 
     # register original envs
-    import milbench
+    import magical
     milbench.register_envs()
 
     if danger_override_env_name:
