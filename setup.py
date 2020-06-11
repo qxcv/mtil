@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-from setuptools import setup
+from setuptools import find_packages, setup
 
 setup(
     name='mtil',
     version='0.0.1',
-    packages=['mtil'],
+    packages=find_packages(exclude=('etc', )),
     install_requires=[
         # the MAGICAL benchmark that this suite is meant to solve :)
         'magical @ git+https://github.com/qxcv/magical.git',
