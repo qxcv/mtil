@@ -83,7 +83,14 @@ def ray_tune_trial(conf, reporter):
     stats = run_gail(**conf, gpu_idx=gpu_idx)
     # just look for a high average (could also use ScoreStd, but I doubt it
     # will make a difference)
-    hp_score = stats['ScoreAverage']
+    stat_values = []
+    for stat_key, stat_value in stats.items():
+        # if there are several variants, average all their scores
+        if stat_key.startswith('Score') and stat_key.endswith('Average'):
+            stat_values.append(stat_value)
+
+    assert len(stat_values) > 0, stats
+    hp_score = sum(stat_values) / len(stat_values)
 
     reporter(hp_score=hp_score, **stats)
 
