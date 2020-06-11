@@ -26,27 +26,29 @@ class BehaviouralCloningPPOMixin:
         else:
             self.expert_batch_iter = None
 
-    def augment_samples(self, samples):
-        # TODO:
-        # (1) Make this do on-device augmentation somehow.
-        # (2) Also do augmentation to BC inputs.
+    def augment_loss_inputs(self, loss_inputs):
         if not self.aug_model:
-            return samples
+            return loss_inputs
 
-        raise NotImplementedError(
-            "need to fix this so that it does on-device augmentation")
+        agent_inputs = loss_inputs.agent_inputs
+        outer_obs = agent_inputs.observation
+        inner_obs = outer_obs.observation
+        new_inner_obs = self.aug_model(inner_obs)
+        new_loss_inputs = loss_inputs._replace(
+            agent_inputs=agent_inputs._replace(observation=outer_obs._replace(
+                observation=new_inner_obs)))
 
-        # apply augmentations, if necessary
-        old_inner_obs = samples.env.observation.observation
-        new_inner_obs = self.aug_model(old_inner_obs)
+        return new_loss_inputs
 
-        # now do annoying modification of nested namedtuples :(
-        new_outer_obs = samples.env.observation._replace(
-            observation=new_inner_obs)
-        new_env = samples.env._replace(observation=new_outer_obs)
-        new_samples = samples._replace(env=new_env)
+    def augment_bc_obs(self, bc_obs):
+        if not self.aug_model:
+            return bc_obs
 
-        return new_samples
+        inner_obs = bc_obs.observation
+        new_inner_obs = self.aug_model(inner_obs)
+        new_obs = bc_obs._replace(observation=new_inner_obs)
+
+        return new_obs
 
     def optimize_agent(self, itr, samples):
         """
@@ -56,7 +58,6 @@ class BehaviouralCloningPPOMixin:
         formed within device, without further data transfer.
         """
         recurrent = self.agent.recurrent
-        samples = self.augment_samples(samples)
         agent_inputs = AgentInputs(  # Move inputs to device once, index there.
             observation=samples.env.observation,
             prev_action=samples.agent.prev_action,
@@ -82,6 +83,8 @@ class BehaviouralCloningPPOMixin:
         batch_size = B if self.agent.recurrent else T * B
         mb_size = batch_size // self.minibatches
         for _ in range(self.epochs):
+            # we apply different augmentations for each "epoch"
+            aug_loss_inputs = self.augment_loss_inputs(loss_inputs)
             for idxs in iterate_mb_idxs(batch_size, mb_size, shuffle=True):
                 T_idxs = slice(None) if recurrent else idxs % T
                 B_idxs = idxs if recurrent else idxs // T
@@ -91,7 +94,7 @@ class BehaviouralCloningPPOMixin:
                 # OK.
                 if self.expert_batch_iter:
                     bc_batch_dict = next(self.expert_batch_iter)
-                    bc_obs = bc_batch_dict['obs']
+                    bc_obs = self.augment_bc_obs(bc_batch_dict['obs'])
                     bc_acts = bc_batch_dict['acts']
                     assert not torch.is_floating_point(bc_acts), bc_acts
                     bc_acts = bc_acts.long()
@@ -99,7 +102,7 @@ class BehaviouralCloningPPOMixin:
                     bc_obs = None
                     bc_acts = None
                 loss, entropy, perplexity = self.loss(
-                    *loss_inputs[T_idxs, B_idxs],
+                    *aug_loss_inputs[T_idxs, B_idxs],
                     bc_observations=bc_obs,
                     bc_actions=bc_acts,
                     init_rnn_state=rnn_state)

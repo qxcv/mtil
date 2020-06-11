@@ -123,6 +123,16 @@ def cli():
     # TODO: add choices for this too (see --disc-aug note)
     default="none",
     help="augmentations to use for PPO (if any)")
+@click.option(
+    "--ppo-use-bn/--no-ppo-use-bn",
+    default=False,
+    help="should policy/VF use batch norm?")
+@click.option(
+    "--ppo-minibatches", default=4,
+    help="number of minibatches to split each PPO batch into")
+@click.option(
+    "--ppo-epochs", default=4,
+    help="number of PPO 'epochs' to train for at each PPO update")
 @click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
 @click.option('--ppo-gamma', default=0.95, help='PPO discount factor (gamma)')
 @click.option('--ppo-lambda', default=0.95, help='PPO GAE lamdba')
@@ -187,7 +197,10 @@ def main(
         ppo_lambda,
         ppo_ent,
         ppo_adv_clip,
-        ppo_norm_adv):
+        ppo_norm_adv,
+        ppo_use_bn,
+        ppo_minibatches,
+        ppo_epochs):
     # set up seeds & devices
     # TODO: also seed child envs, when rlpyt supports it
     set_seeds(seed)
@@ -235,6 +248,7 @@ def main(
         batch_T=sampler_batch_T)
 
     policy_kwargs = {
+        'use_bn': ppo_use_bn,
         'env_ids_and_names': task_ids_and_demo_env_names,
         **get_policy_spec_magical(env_metas),
     }
@@ -285,6 +299,8 @@ def main(
         entropy_loss_coeff=ppo_ent,  # was working at 0.003 and 0.001
         gae_lambda=ppo_lambda,
         ratio_clip=ppo_adv_clip,
+        minibatches=ppo_minibatches,
+        epochs=ppo_epochs,
         value_loss_coeff=1.0,
         clip_grad_norm=1.0,
         normalize_advantage=ppo_norm_adv,

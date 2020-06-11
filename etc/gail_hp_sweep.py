@@ -18,7 +18,7 @@ from skopt.space import space as opt_space
 # FIXME: don't make this relative to /home, but rather read it from cmdline or
 # (better yet) a config file
 DEMO_PATTERN \
-    = '~/repos/magical/demos-simplified/match-regions-2020-03-01/*.pkl.gz'
+    = '~/repos/magical/demos-ea/cluster-colour-2020-05-18/demo-*.pkl.gz'
 
 
 def get_demo_paths():
@@ -63,7 +63,9 @@ def run_gail(gpu_idx, **cfg_kwargs):
     cmd = [
         *'xvfb-run -a python -m mtil.algos.mtgail'.split(),
         *f'--gpu-idx {gpu_idx} --snapshot-gap 1000'.split(),
-        *f'--total-n-steps {int(1e6)}'.split(),
+        # we're using small number of steps so we can get shoot for MAX
+        # EFFICIENCY (like RAD)
+        *f'--total-n-steps {int(0.5e6)}'.split(),
         *auto_args,
         *get_demo_paths(),
     ]
@@ -114,35 +116,48 @@ class CheckpointFIFOScheduler(FIFOScheduler):
               help="address of Ray instance to attach to")
 def run_ray_tune(ray_address):
     sk_space = collections.OrderedDict()
-    sk_space['omit_noop'] = [True, False]  # ???
-    sk_space['disc_up_per_iter'] = (8, 32)  # small values don't work
-    sk_space['sampler_time_steps'] = (8, 64)  # small is okay?
-    sk_space['sampler_batch_envs'] = (16, 64)  # bigger = better?
-    # leaving this out for now; don't want to just get a finely-tuned BC
-    # baseline
-    # sk_space['bc_loss'] = ['0.0', str(int(1e-3)), str(1)]
-    sk_space['ppo_lr'] = (5e-5, 5e-4, 'log-uniform')
+
+    sk_space['disc_up_per_iter'] = (2, 32)  # small values don't work
+    sk_space['sampler_time_steps'] = (8, 32)  # small is okay?
+    sk_space['sampler_batch_envs'] = (16, 48)  # bigger = better?
+    sk_space['ppo_lr'] = (5e-5, 5e-3, 'log-uniform')
     sk_space['ppo_gamma'] = (0.9, 1.0, 'log-uniform')
     sk_space['ppo_lambda'] = (0.9, 1.0, 'log-uniform')
     sk_space['ppo_ent'] = (1e-6, 1e-4, 'log-uniform')
     sk_space['ppo_adv_clip'] = (0.01, 0.2, 'uniform')
+    # allow us to have smaller batches or run more of them
+    sk_space['ppo_minibatches'] = [4, 8]
+    sk_space['ppo_epochs'] = [2, 16]
+    sk_space['ppo_use_bn'] = [True, False]
+    sk_space['ppo_aug'] = ['none', 'all']
+
+    # things I'm commenting out for simplicity:
+    # sk_space['bc_loss'] = ['0.0', str(int(1e-3)), str(1)]
+
     # things that don't matter that much:
+    # sk_space['omit_noop'] = [True, False]  # ???
     # sk_space['disc_lr'] = (1e-5, 5e-4, 'log-uniform')  # fix to 1e-4
     # sk_space['disc_use_act'] = [True, False]  # fix to True
     # sk_space['disc_all_frames'] = [True, False]  # fix to True
     # sk_space['disc_replay_mult'] = opt_space.Integer(1, 32, 'log-uniform')  # fix to 4 # noqa: E501
     # sk_space['ppo_norm_adv'] = [True, False]  # fix to False
+
     known_working = {
-        'omit_noop': True,
-        'disc_up_per_iter': 16,
+        'disc_up_per_iter': 4,
         'sampler_time_steps': 16,
         'sampler_batch_envs': 32,
         'bc_loss': 0.0,
         'ppo_lr': 2.5e-4,
+        'ppo_adv_clip': 0.05,
+        'ppo_minibatches': 4,
+        'ppo_epochs': 4,
+        'ppo_use_bn': False,
+        'ppo_aug': 'none',
         'ppo_gamma': 0.95,
         'ppo_lambda': 0.95,
         'ppo_ent': 1e-5,
-        'ppo_adv_clip': 0.05,
+        # things that I'm removing because they'll take too much time
+        # 'omit_noop': True,
         # things that don't matter much:
         # 'disc_lr': 1e-4,
         # 'disc_use_act': True,
