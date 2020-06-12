@@ -1,5 +1,6 @@
 """Utilities for on-device image augmentation with Kornia."""
 import collections
+import math
 
 import kornia.augmentation as aug
 import torch
@@ -102,6 +103,22 @@ class CIELabJitter(nn.Module):
         return jittered
 
 
+class Rot90(nn.Module):
+    """Apply a 0/90/180/270 degree rotation to the image."""
+    def forward(self, images):
+        batch_size = images.size(0)
+        generated_rots = torch.randint(low=0, high=4, size=(batch_size, ))
+        rot_elems = []
+        for batch_idx in range(batch_size):
+            rot_opt = generated_rots[batch_idx]
+            rotated_image = torch.rot90(images[batch_idx],
+                                        k=rot_opt,
+                                        dims=(1, 2))
+            rot_elems.append(rotated_image)
+        rot_images = torch.stack(rot_elems)
+        return rot_images
+
+
 class MILBenchAugmentations(KorniaAugmentations):
     """Convenience class for data augmentation. Has a standard set of possible
     augmentations with sensible pre-set values."""
@@ -115,23 +132,92 @@ class MILBenchAugmentations(KorniaAugmentations):
         ('cn', ['colour_jitter', 'noise']),
         ('noise', ['noise']),
         ('none', []),
+        # NEW AUGMENTATIONS:
+        # WARNING: flip_ud and flip_lr should screw up policy completely if you
+        # use them, since they effectively reverse controls :(
+        ('flip_ud', ['flip_ud']),
+        ('flip_lr', ['flip_lr']),
+        # ('rand_grey', ['rand_grey']),  TODO: implement this
+        ('colour_jitter_ex', ['colour_jitter_ex']),
+        ('translate_ex', ['translate_ex']),
+        ('rotate_ex', ['rotate_ex']),
+        ('rot90', ['rot90']),
+        ('crop', ['crop']),
+        ('erase', ['erase']),
+        ('colour_jitter', ['colour_jitter']),
+        ('translate', ['translate']),
+        ('rotate', ['rotate']),
     ])
 
-    def __init__(self,
-                 colour_jitter=False,
-                 translate=False,
-                 rotate=False,
-                 noise=False):
+    def __init__(
+            self,
+            colour_jitter=False,
+            translate=False,
+            rotate=False,
+            noise=False,
+            # NEW AUGMENTATIONS:
+            flip_ud=False,  # yes!
+            flip_lr=False,  # yes!
+            # FIXME: implement this in some sane way
+            # rand_grey=False,
+            colour_jitter_ex=False,  # yes!
+            translate_ex=False,  # yes!
+            rotate_ex=False,  # yes!
+            rot90=False,  # yes!
+            crop=False,  # yes!
+            erase=False,  # yes!
+    ):
         transforms = []
         # TODO: tune hyperparameters of the augmentations
-        if colour_jitter:
-            transforms.append(CIELabJitter(max_lum_scale=1.01,
-                                           max_uv_rads=0.15))
-        if translate or rotate:
+        if colour_jitter or colour_jitter_ex:
+            assert not (colour_jitter and colour_jitter_ex)
+            if colour_jitter_ex:
+                transforms.append(
+                    CIELabJitter(max_lum_scale=1.05, max_uv_rads=math.pi))
+            else:
+                transforms.append(
+                    CIELabJitter(max_lum_scale=1.01, max_uv_rads=0.15))
+
+        if translate or rotate or translate_ex or rotate_ex:
+            assert not (rotate and rotate_ex)
+            if rotate:
+                rot_bounds = (-5, 5)
+            elif rotate_ex:
+                rot_bounds = (-35, 35)
+            else:
+                rot_bounds = (0, 0)
+
+            assert not (translate and translate_ex)
+            if translate:
+                trans_bounds = (0.05, 0.05)
+            elif translate_ex:
+                trans_bounds = (0.3, 0.3)
+            else:
+                trans_bounds = None
+
             transforms.append(
-                aug.RandomAffine(degrees=(-5, 5) if rotate else (0, 0),
-                                 translate=(0.05, 0.05) if translate else None,
+                aug.RandomAffine(degrees=rot_bounds,
+                                 translate=trans_bounds,
                                  padding_mode='border'))
+
+        if flip_lr:
+            transforms.append(aug.RandomHorizontalFlip())
+
+        if flip_ud:
+            transforms.append(aug.RandomVerticalFlip())
+
+        if crop:
+            transforms.append(
+                aug.RandomResizedCrop(size=(96, 96),
+                                      scale=(0.8, 1.0),
+                                      ratio=(0.9, 1.1)))
+
+        if rot90:
+            transforms.append(Rot90())
+
+        if erase:
+            transforms.append(aug.RandomErasing(value=0.5))
+
         if noise:
             # Remember that values lie in [0,1], so std=0.01 (for example)
             # means there's a >99% chance that any given noise value will lie

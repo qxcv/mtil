@@ -52,7 +52,7 @@ def cli():
 @click.option("--seed", default=42, help="PRNG seed")
 @click.option("--batch-size", default=32, help="batch size")
 @click.option("--total-n-batches",
-              default=15000,
+              default=20000,
               help="total batches of training to perform")
 @click.option("--eval-every-n-batches",
               default=1000,
@@ -85,17 +85,18 @@ def cli():
               default=1,
               help="number of task-specific FC layers in multitask policy net")
 @click.option("--aug-mode",
-              type=click.Choice([
-                  "none",
-                  "col",
-                  "trans",
-                  "rot",
-                  "noise",
-                  "transrot",
-                  "trn",
-                  "cn",
-                  "all",
-              ]),
+              # TODO: fill this out automatically from presets!
+              # type=click.Choice([
+              #     "none",
+              #     "col",
+              #     "trans",
+              #     "rot",
+              #     "noise",
+              #     "transrot",
+              #     "trn",
+              #     "cn",
+              #     "all",
+              # ]),
               default="all",
               help="augmentations to use")
 @click.option("--load-policy",
