@@ -3,6 +3,7 @@ import collections
 import math
 
 import kornia.augmentation as aug
+from kornia.color.gray import rgb_to_grayscale
 import torch
 from torch import nn
 
@@ -119,6 +120,37 @@ class Rot90(nn.Module):
         return rot_images
 
 
+class Greyscale(nn.Module):
+    __constants__ = ['p']
+
+    def __init__(self, p=0.5):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x):
+        # separate out channels, just like in CIELabJitter
+        batch_size = x.size(0)
+        stack_depth = x.size(1) // 3
+        assert x.size(1) == 3 * stack_depth, x.shape
+        x_reshape = x.view(x.shape[:1] + (stack_depth, 3) + x.shape[2:])
+
+        recol_elems = []
+        rand_nums = torch.rand(batch_size)
+        for batch_idx in range(batch_size):
+            if rand_nums[batch_idx] < self.p:
+                recol_reduced = rgb_to_grayscale(x_reshape[batch_idx])
+                rep_spec = (1, ) * (recol_reduced.ndim - 3) + (3, 1, 1)
+                recol = recol_reduced.repeat(rep_spec)
+                recol_elems.append(recol)
+            else:
+                recol_elems.append(x_reshape[batch_idx])
+
+        unshaped_result = torch.stack(recol_elems, dim=0)
+        result = unshaped_result.view(x.shape)
+
+        return result
+
+
 class MILBenchAugmentations(KorniaAugmentations):
     """Convenience class for data augmentation. Has a standard set of possible
     augmentations with sensible pre-set values."""
@@ -137,7 +169,7 @@ class MILBenchAugmentations(KorniaAugmentations):
         # use them, since they effectively reverse controls :(
         ('flip_ud', ['flip_ud']),
         ('flip_lr', ['flip_lr']),
-        # ('rand_grey', ['rand_grey']),  TODO: implement this
+        ('grey', ['grey']),
         ('colour_jitter_ex', ['colour_jitter_ex']),
         ('translate_ex', ['translate_ex']),
         ('rotate_ex', ['rotate_ex']),
@@ -155,17 +187,16 @@ class MILBenchAugmentations(KorniaAugmentations):
             translate=False,
             rotate=False,
             noise=False,
-            # NEW AUGMENTATIONS:
-            flip_ud=False,  # yes!
-            flip_lr=False,  # yes!
-            # FIXME: implement this in some sane way
-            # rand_grey=False,
-            colour_jitter_ex=False,  # yes!
-            translate_ex=False,  # yes!
-            rotate_ex=False,  # yes!
-            rot90=False,  # yes!
-            crop=False,  # yes!
-            erase=False,  # yes!
+            flip_ud=False,
+            flip_lr=False,
+            rand_grey=False,
+            colour_jitter_ex=False,
+            translate_ex=False,
+            rotate_ex=False,
+            rot90=False,
+            crop=False,
+            erase=False,
+            grey=False,
     ):
         transforms = []
         # TODO: tune hyperparameters of the augmentations
@@ -227,4 +258,8 @@ class MILBenchAugmentations(KorniaAugmentations):
             # JIT doesn't make it any faster (unsurprisingly)
             # noise_mod = torch.jit.script(noise_mod)
             transforms.append(noise_mod)
+
+        if grey:
+            transforms.append(Greyscale(p=0.5))
+
         super().__init__(*transforms)

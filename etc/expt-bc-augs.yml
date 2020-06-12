@@ -99,6 +99,15 @@ bc-st-noise:
     eval_n_traj: 1
     aug_mode: noise
 
+bc-st-grey:
+  algo: bc
+  multi: false
+  nseeds: 3
+  env-subset: ["move-to-region", "match-regions", "cluster-colour", "cluster-shape"]
+  args:
+    eval_n_traj: 1
+    aug_mode: grey
+
 bc-st-flipud:
   algo: bc
   multi: false
