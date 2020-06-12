@@ -61,7 +61,7 @@ def run_gail(gpu_idx, **cfg_kwargs):
         assert cvd == str(gpu_idx), (gpu_idx, cvd)
         gpu_idx = 0
     cmd = [
-        *'xvfb-run -a python -m mtil.algos.mtgail'.split(),
+        *'python -m mtil.algos.mtgail'.split(),
         *f'--gpu-idx {gpu_idx} --snapshot-gap 1000'.split(),
         # we're using small number of steps so we can get shoot for MAX
         # EFFICIENCY (like RAD)
@@ -124,9 +124,9 @@ class CheckpointFIFOScheduler(FIFOScheduler):
 def run_ray_tune(ray_address):
     sk_space = collections.OrderedDict()
 
-    sk_space['disc_up_per_iter'] = (2, 32)  # small values don't work
-    sk_space['sampler_time_steps'] = (8, 32)  # small is okay?
-    sk_space['sampler_batch_envs'] = (16, 48)  # bigger = better?
+    sk_space['disc_up_per_iter'] = (2, 16)  # small values don't work
+    sk_space['sampler_time_steps'] = (8, 24)  # small is okay?
+    sk_space['sampler_batch_envs'] = (8, 32)  # bigger = better?
     sk_space['ppo_lr'] = (5e-5, 5e-3, 'log-uniform')
     sk_space['ppo_gamma'] = (0.9, 1.0, 'log-uniform')
     sk_space['ppo_lambda'] = (0.9, 1.0, 'log-uniform')
@@ -180,7 +180,7 @@ def run_ray_tune(ray_address):
     search_alg = SkOptSearch(
         sk_optimiser,
         sk_space.keys(),
-        max_concurrent=4,
+        max_concurrent=6,  # XXX figure out how to make this configurable
         metric='hp_score',
         mode='max',
         points_to_evaluate=[[known_working[k] for k in sk_space]],
@@ -192,7 +192,7 @@ def run_ray_tune(ray_address):
         ray_tune_trial,
         search_alg=search_alg,
         local_dir='ray-tune-results',
-        resources_per_trial={"gpu": 1},
+        resources_per_trial={"gpu": 0.32},
         # this could be 2 days to a week of runs, depending on the env
         num_samples=200,
         scheduler=CheckpointFIFOScheduler(search_alg))
