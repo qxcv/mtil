@@ -173,46 +173,61 @@ class MILBenchAugmentations(KorniaAugmentations):
         ('colour_jitter_ex', ['colour_jitter_ex']),
         ('translate_ex', ['translate_ex']),
         ('rotate_ex', ['rotate_ex']),
-        ('rot90', ['rot90']),
+        ('rotate_mid', ['rotate_mid'])('rot90', ['rot90']),
         ('crop', ['crop']),
+        ('crop_ex', ['crop_ex']),
         ('erase', ['erase']),
         ('colour_jitter', ['colour_jitter']),
         ('translate', ['translate']),
         ('rotate', ['rotate']),
+        # weird names are b/c I'm not sure whether I want to keep this set
+        ('TRmJmC', ['translate', 'rotate_mid', 'colour_jitter_mid', 'crop']),
+        ('TRmJmC-noTRm', ['colour_jitter_mid', 'crop']),
+        ('TRmJmC-noJm', ['translate', 'rotate_mid', 'crop']),
+        ('TRmJmC-noC', ['translate', 'rotate_mid', 'colour_jitter_mid']),
     ])
 
     def __init__(
             self,
-            colour_jitter=False,
             translate=False,
             rotate=False,
             noise=False,
             flip_ud=False,
             flip_lr=False,
             rand_grey=False,
+            colour_jitter=False,
+            colour_jitter_mid=False,
             colour_jitter_ex=False,
             translate_ex=False,
+            rotate_mid=False,
             rotate_ex=False,
             rot90=False,
             crop=False,
+            crop_ex=False,
             erase=False,
             grey=False,
     ):
         transforms = []
         # TODO: tune hyperparameters of the augmentations
         if colour_jitter or colour_jitter_ex:
-            assert not (colour_jitter and colour_jitter_ex)
+            assert sum([colour_jitter, colour_jitter_mid, colour_jitter_ex]) \
+                <= 1
             if colour_jitter_ex:
                 transforms.append(
                     CIELabJitter(max_lum_scale=1.05, max_uv_rads=math.pi))
+            elif colour_jitter_mid:
+                transforms.append(
+                    CIELabJitter(max_lum_scale=1.01, max_uv_rads=0.6))
             else:
                 transforms.append(
                     CIELabJitter(max_lum_scale=1.01, max_uv_rads=0.15))
 
         if translate or rotate or translate_ex or rotate_ex:
-            assert not (rotate and rotate_ex)
+            assert sum([rotate, rotate_ex, rotate_mid]) <= 1
             if rotate:
                 rot_bounds = (-5, 5)
+            elif rotate_mid:
+                rot_bounds = (-20, 20)
             elif rotate_ex:
                 rot_bounds = (-35, 35)
             else:
@@ -237,11 +252,18 @@ class MILBenchAugmentations(KorniaAugmentations):
         if flip_ud:
             transforms.append(aug.RandomVerticalFlip())
 
-        if crop:
-            transforms.append(
-                aug.RandomResizedCrop(size=(96, 96),
-                                      scale=(0.8, 1.0),
-                                      ratio=(0.9, 1.1)))
+        if crop or crop_ex:
+            assert sum([crop, crop_ex]) <= 1
+            if crop_ex:
+                transforms.append(
+                    aug.RandomResizedCrop(size=(96, 96),
+                                          scale=(0.5, 1.0),
+                                          ratio=(0.75, 1.333)))
+            else:
+                transforms.append(
+                    aug.RandomResizedCrop(size=(96, 96),
+                                          scale=(0.8, 1.0),
+                                          ratio=(0.9, 1.1)))
 
         if rot90:
             transforms.append(Rot90())

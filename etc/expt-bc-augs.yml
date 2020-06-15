@@ -126,6 +126,54 @@ bc-st-fliplr:
     eval_n_traj: 1
     aug_mode: flip_lr
 
+
+###########  NEW EXPERIMENTS 2020-06-14 ###########
+
+bc-st-crop-ex:
+  algo: bc
+  multi: false
+  nseeds: 3
+  env-subset: ["move-to-region", "match-regions", "cluster-colour", "cluster-shape"]
+  args:
+    eval_n_traj: 1
+    aug_mode: crop_ex
+
+bc-st-TRmJmC:
+  algo: bc
+  multi: false
+  nseeds: 3
+  env-subset: ["move-to-region", "match-regions", "cluster-colour", "cluster-shape"]
+  args:
+    eval_n_traj: 1
+    aug_mode: TRmJmC
+
+bc-st-TRmJmC-noTRm:
+  algo: bc
+  multi: false
+  nseeds: 3
+  env-subset: ["move-to-region", "match-regions", "cluster-colour", "cluster-shape"]
+  args:
+    eval_n_traj: 1
+    aug_mode: TRmJmC-noTRm
+
+bc-st-TRmJmC-noJm:
+  algo: bc
+  multi: false
+  nseeds: 3
+  env-subset: ["move-to-region", "match-regions", "cluster-colour", "cluster-shape"]
+  args:
+    eval_n_traj: 1
+    aug_mode: TRmJmC-noJm
+
+bc-st-TRmJmC-noC:
+  algo: bc
+  multi: false
+  nseeds: 3
+  env-subset: ["move-to-region", "match-regions", "cluster-colour", "cluster-shape"]
+  args:
+    eval_n_traj: 1
+    aug_mode: TRmJmC-noC
+
 # To make BC cheap, append this:
 #   args:
 #     total_n_batches: 1
