@@ -18,7 +18,7 @@ from skopt.space import space as opt_space
 # FIXME: don't make this relative to /home, but rather read it from cmdline or
 # (better yet) a config file
 DEMO_PATTERN \
-    = '~/repos/magical/demos-ea/move-to-region-2020-04-04/demo-*.pkl.gz'
+    = '~/repos/magical/demos-ea/cluster-shape-2020-05-18/demo-*.pkl.gz'
 
 
 def get_demo_paths():
@@ -125,22 +125,20 @@ class CheckpointFIFOScheduler(FIFOScheduler):
 def run_ray_tune(ray_address):
     sk_space = collections.OrderedDict()
 
-    sk_space['disc_up_per_iter'] = (2, 16)  # small values don't work
-    sk_space['sampler_time_steps'] = (8, 24)  # small is okay?
+    sk_space['disc_up_per_iter'] = (2, 12)  # small values don't work
+    sk_space['sampler_time_steps'] = (8, 20)  # small is okay?
     sk_space['sampler_batch_envs'] = (8, 24)  # bigger = better?
     sk_space['ppo_lr'] = (1e-6, 1e-3, 'log-uniform')
     sk_space['ppo_gamma'] = (0.9, 1.0, 'log-uniform')
     sk_space['ppo_lambda'] = (0.9, 1.0, 'log-uniform')
     sk_space['ppo_ent'] = (1e-6, 1e-4, 'log-uniform')
-    sk_space['ppo_adv_clip'] = (0.01, 0.2, 'uniform')
+    sk_space['ppo_adv_clip'] = (0.05, 0.2, 'uniform')
+    sk_space['add_preproc'] = ['LoRes4E', 'LoRes3EA']
     # allow us to have smaller batches or run more of them
-    sk_space['ppo_minibatches'] = [4, 8]
-    sk_space['ppo_epochs'] = [2, 16]
-    sk_space['transfer_pol_batch_weight'] = (0.1, 1.0)
-    sk_space['transfer_disc_loss_weight'] = (1e-3, 10.0, 'log-uniform')
-    sk_space['transfer_pol_loss_weight'] = (1e-6, 10.0, 'log-uniform')
-    sk_space['transfer_disc_anneal'] = [True, False]
-    sk_space['ppo_aug'] = ['none', 'all']
+    sk_space['ppo_minibatches'] = [4, 6]
+    sk_space['ppo_epochs'] = [2, 10]
+    sk_space['ppo_use_bn'] = [True, False]
+    sk_space['ppo_aug'] = ['none', 'all', 'crop']
 
     # things I'm commenting out for simplicity:
     # sk_space['bc_loss'] = ['0.0', str(int(1e-3)), str(1)]
@@ -155,46 +153,45 @@ def run_ray_tune(ray_address):
     # sk_space['ppo_norm_adv'] = [True, False]  # fix to False
 
     known_working = {
-        'disc_up_per_iter': 4,
-        'sampler_time_steps': 16,
-        'sampler_batch_envs': 32,
-        'bc_loss': 0.0,
-        'ppo_lr': 2.5e-4,
-        'ppo_adv_clip': 0.05,
-        'ppo_minibatches': 4,
-        'ppo_epochs': 4,
-        'ppo_gamma': 0.95,
-        'ppo_lambda': 0.95,
-        'ppo_ent': 1e-5,
-        'transfer_pol_batch_weight': 1.0,
-        'transfer_pol_batch_weight': 1.0,
-        'transfer_disc_loss_weight': 0.1,
-        'transfer_pol_loss_weight': 0.1,
-        'transfer_disc_anneal': False,
-        'ppo_aug': 'none',
+        'disc_up_per_iter': [4, 2],
+        'sampler_time_steps': [16, 16],
+        'sampler_batch_envs': [32, 12],
+        # 'bc_loss': [0.0, 0.0],
+        'ppo_lr': [2.5e-4, 2e-4],
+        'ppo_adv_clip': [0.05, 0.1],
+        'ppo_minibatches': [4, 5],
+        'ppo_epochs': [4, 6],
+        'ppo_use_bn': [False, False],
+        'ppo_aug': ['none', 'none'],
+        'ppo_gamma': [0.95, 0.9],
+        'ppo_lambda': [0.95, 0.9],
+        'ppo_ent': [1e-5, 1.2e-5],
+        'add_preproc': ['LoRes4E', 'LoRes4E']
         # things that I'm removing because they'll take too much time
-        # 'ppo_use_bn': False,
-        # 'omit_noop': True,
+        # 'omit_noop': [True],
         # things that don't matter much:
-        # 'disc_lr': 1e-4,
-        # 'disc_use_act': True,
-        # 'disc_all_frames': True,
-        # 'disc_replay_mult': 4,
-        # 'ppo_norm_adv': False,
+        # 'disc_lr': [1e-4],
+        # 'disc_use_act': [True],
+        # 'disc_all_frames': [True],
+        # 'disc_replay_mult': [4],
+        # 'ppo_norm_adv': [False],
     }
     for k, v in list(sk_space.items()):
         new_v = opt_space.check_dimension(v)
         new_v.name = k
         sk_space[k] = new_v
     sk_optimiser = Optimizer(list(sk_space.values()), base_estimator='GP')
+    n_known_working, = set(map(len, known_working.values()))
     search_alg = SkOptSearch(
         sk_optimiser,
         sk_space.keys(),
-        max_concurrent=9,  # XXX figure out how to make this configurable
+        max_concurrent=8,  # XXX figure out how to make this configurable
         metric='hp_score',
         mode='max',
-        points_to_evaluate=[[known_working[k] for k in sk_space]],
-    )
+        points_to_evaluate=[
+            [known_working[k][i] for k in sk_space]
+            for i in range(n_known_working)
+        ])
 
     if ray_address:
         ray.init(redis_address=ray_address)
@@ -202,7 +199,7 @@ def run_ray_tune(ray_address):
         ray_tune_trial,
         search_alg=search_alg,
         local_dir='ray-tune-results',
-        resources_per_trial={"gpu": 0.32},
+        resources_per_trial={"gpu": 0.24},
         # this could be 2 days to a week of runs, depending on the env
         num_samples=200,
         scheduler=CheckpointFIFOScheduler(search_alg))
