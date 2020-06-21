@@ -150,7 +150,10 @@ def cli():
               default=1.0,
               help="weight of transfer envs relative to demo envs when making "
               "trajectory sampler (>1 is more weight, <1 is less weight)")
-@click.option("--transfer-loss-weight",
+@click.option("--transfer-disc-loss-weight",
+              default=1e-1,
+              help='transfer loss weight for disc. (with --transfer-variant)')
+@click.option("--transfer-pol-loss-weight",
               default=1e-1,
               help='transfer loss weight for disc. (with --transfer-variant)')
 @click.option("--transfer-disc-anneal/--no-transfer-disc-anneal",
@@ -183,7 +186,8 @@ def main(
         disc_use_bn,
         disc_net_attn,
         transfer_variants,
-        transfer_loss_weight,
+        transfer_disc_loss_weight,
+        transfer_pol_loss_weight,
         transfer_disc_anneal,
         transfer_pol_batch_weight,
         danger_debug_reward_weight,
@@ -271,17 +275,21 @@ def main(
         use_bn=disc_use_bn,
     ).to(dev)
 
-    if not transfer_variants and transfer_loss_weight:
+    if not transfer_variants \
+      and (transfer_disc_loss_weight or transfer_pol_loss_weight):
         print("No xfer variants supplied, setting xfer disc loss term to zero")
-        transfer_loss_weight = 0.0
-    if transfer_variants and transfer_loss_weight:
+        transfer_disc_loss_weight = 0.0
+        transfer_pol_loss_weight = 0.0
+    if transfer_pol_loss_weight > 0:
+        assert transfer_disc_loss_weight > 0
+    if transfer_variants and transfer_disc_loss_weight:
         xfer_adv_module = BinaryDomainLossModule(
             discriminator_mt.ret_feats_dim).to(dev)
     else:
         xfer_adv_module = None
 
     reward_model_mt = RewardModel(discriminator_mt, xfer_adv_module,
-                                  transfer_loss_weight).to(dev)
+                                  transfer_pol_loss_weight).to(dev)
     reward_evaluator_mt = RewardEvaluatorMT(
         task_ids_and_names=task_ids_and_demo_env_names,
         reward_model=reward_model_mt,
@@ -355,7 +363,7 @@ def main(
                                dev=dev,
                                aug_model=aug_model,
                                lr=disc_lr,
-                               xfer_adv_weight=transfer_loss_weight,
+                               xfer_adv_weight=transfer_disc_loss_weight,
                                xfer_adv_anneal=transfer_disc_anneal,
                                xfer_adv_module=xfer_adv_module)
 
@@ -430,6 +438,8 @@ def main(
         'ppo_norm_adv': ppo_norm_adv,
         'transfer_variants': transfer_variants,
         'transfer_pol_batch_weight': transfer_pol_batch_weight,
+        'transfer_pol_loss_weight': transfer_pol_loss_weight,
+        'transfer_disc_loss_weight': transfer_disc_loss_weight,
         'transfer_disc_anneal': transfer_disc_anneal,
         'ndemos': len(demos),
         'n_uniq_envs': n_uniq_envs,

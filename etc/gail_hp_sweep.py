@@ -18,7 +18,7 @@ from skopt.space import space as opt_space
 # FIXME: don't make this relative to /home, but rather read it from cmdline or
 # (better yet) a config file
 DEMO_PATTERN \
-    = '~/repos/magical/demos-ea/cluster-colour-2020-05-18/demo-*.pkl.gz'
+    = '~/repos/magical/demos-ea/move-to-region-2020-04-04/demo-*.pkl.gz'
 
 
 def get_demo_paths():
@@ -65,7 +65,8 @@ def run_gail(gpu_idx, **cfg_kwargs):
         *f'--gpu-idx {gpu_idx} --snapshot-gap 1000'.split(),
         # we're using small number of steps so we can get shoot for MAX
         # EFFICIENCY (like RAD)
-        *f'--total-n-steps {int(0.5e6)}'.split(),
+        *f'--total-n-steps {int(0.3e6)}'.split(),
+        *f'--transfer-variant MoveToRegion-TestAll-v0'.split(),
         *auto_args,
         *get_demo_paths(),
     ]
@@ -126,8 +127,8 @@ def run_ray_tune(ray_address):
 
     sk_space['disc_up_per_iter'] = (2, 16)  # small values don't work
     sk_space['sampler_time_steps'] = (8, 24)  # small is okay?
-    sk_space['sampler_batch_envs'] = (8, 32)  # bigger = better?
-    sk_space['ppo_lr'] = (5e-5, 5e-3, 'log-uniform')
+    sk_space['sampler_batch_envs'] = (8, 24)  # bigger = better?
+    sk_space['ppo_lr'] = (1e-6, 1e-3, 'log-uniform')
     sk_space['ppo_gamma'] = (0.9, 1.0, 'log-uniform')
     sk_space['ppo_lambda'] = (0.9, 1.0, 'log-uniform')
     sk_space['ppo_ent'] = (1e-6, 1e-4, 'log-uniform')
@@ -135,11 +136,15 @@ def run_ray_tune(ray_address):
     # allow us to have smaller batches or run more of them
     sk_space['ppo_minibatches'] = [4, 8]
     sk_space['ppo_epochs'] = [2, 16]
-    sk_space['ppo_use_bn'] = [True, False]
+    sk_space['transfer_pol_batch_weight'] = (0.1, 1.0)
+    sk_space['transfer_disc_loss_weight'] = (1e-3, 10.0, 'log-uniform')
+    sk_space['transfer_pol_loss_weight'] = (1e-6, 10.0, 'log-uniform')
+    sk_space['transfer_disc_anneal'] = [True, False]
     sk_space['ppo_aug'] = ['none', 'all']
 
     # things I'm commenting out for simplicity:
     # sk_space['bc_loss'] = ['0.0', str(int(1e-3)), str(1)]
+    # sk_space['ppo_use_bn'] = [True, False]
 
     # things that don't matter that much:
     # sk_space['omit_noop'] = [True, False]  # ???
@@ -158,12 +163,17 @@ def run_ray_tune(ray_address):
         'ppo_adv_clip': 0.05,
         'ppo_minibatches': 4,
         'ppo_epochs': 4,
-        'ppo_use_bn': False,
-        'ppo_aug': 'none',
         'ppo_gamma': 0.95,
         'ppo_lambda': 0.95,
         'ppo_ent': 1e-5,
+        'transfer_pol_batch_weight': 1.0,
+        'transfer_pol_batch_weight': 1.0,
+        'transfer_disc_loss_weight': 0.1,
+        'transfer_pol_loss_weight': 0.1,
+        'transfer_disc_anneal': False,
+        'ppo_aug': 'none',
         # things that I'm removing because they'll take too much time
+        # 'ppo_use_bn': False,
         # 'omit_noop': True,
         # things that don't matter much:
         # 'disc_lr': 1e-4,
@@ -180,7 +190,7 @@ def run_ray_tune(ray_address):
     search_alg = SkOptSearch(
         sk_optimiser,
         sk_space.keys(),
-        max_concurrent=6,  # XXX figure out how to make this configurable
+        max_concurrent=9,  # XXX figure out how to make this configurable
         metric='hp_score',
         mode='max',
         points_to_evaluate=[[known_working[k] for k in sk_space]],
