@@ -44,7 +44,7 @@ Reproducing the experiments in the MAGICAL paper requires two steps:
 
 1. First, you must use `etc/comparison_runs.py` to train and test all of the
    baselines.
-2. Second, you must use `etc/collate-coomparison-runs.ipynb` to collate the data
+2. Second, you must use `etc/collate-comparison-runs.ipynb` to collate the data
    produced by `comparison_runs.py` into a single table.
    
 To perform the first step, you can use a command like the following:
