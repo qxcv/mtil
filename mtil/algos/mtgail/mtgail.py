@@ -74,6 +74,42 @@ class DiscrimTrainBuffer:
         return self.circ_buf[inds_to_sample]
 
 
+def hacky_interpolate(structure, eps, sub_batch_size):
+    def inner_map(tens):
+        tens_l = tens[:sub_batch_size]
+        tens_r = tens[sub_batch_size:]
+        if tens.ndim == 4 and tens.dtype in (torch.uint8, torch.float):
+            # Float interpolation is easy. Otherwise we properly interpolate
+            # byte image by (implicitly) converting to float, then back to
+            # byte.
+            eps_exp = eps[:, None, None, None]
+            interp = eps_exp * tens_l + (1 - eps_exp) * tens_r
+            if tens.type == torch.uint8:
+                interp = interp.to(torch.uint8)
+        elif tens.ndim == 1 and not torch.is_floating_point(tens):
+            # "interpolate" some integers (assume action label or something, so
+            # the output must be discrete)
+
+            # FIXME(sam): what we really want to do is interpolate the
+            # one-hot representation or something, but instead of that I'm
+            # just going to do this. (whatever, Lipschitzness of discrete
+            # functions doesn't make sense anyway.)
+
+            tens_elems = []
+            for eps_i, elem_l, elem_r in zip(eps, tens_l, tens_r):
+                tens_elems.append(elem_l if eps_i > 0.5 else elem_r)
+            interp = torch.stack(tens_elems, dim=0)
+
+        else:
+            raise ValueError("cannot handle shape/type of tensor", tens)
+
+        return interp
+
+    new_structure = tree_map(inner_map, structure)
+
+    return new_structure
+
+
 class MILBenchDiscriminatorMT(nn.Module):
     def __init__(
             self,
@@ -139,7 +175,21 @@ class MILBenchDiscriminatorMT(nn.Module):
             self.mt_logits = MultiTaskAffineLayer(fc_dim, 1,
                                                   len(self.task_ids_and_names))
 
-    def forward(self, obs, act, return_feats=False):
+    def forward_no_preproc(self, obs_preproc, act_preproc, task_id):
+        obs_features = self.feature_extractor(obs_preproc)
+        if self.use_actions:
+            action_features = self.action_preproc(act_preproc)
+            all_features = torch.cat((obs_features, action_features), dim=1)
+        else:
+            all_features = obs_features
+        lin_features = self.postproc(all_features)
+        logits = self.mt_logits(lin_features, task_id)
+        assert logits.dim() == 2, logits.shape
+        flat_logits = logits.squeeze(1)
+
+        return flat_logits, all_features
+
+    def preproc_obs_acts(self, obs, act):
         # this only handles images
         lead_dim, T, B, img_shape = infer_leading_dims(obs.observation, 3)
         lead_dim_act, T_act, B_act, act_shape = infer_leading_dims(act, 0)
@@ -156,19 +206,20 @@ class MILBenchDiscriminatorMT(nn.Module):
             trimmed_img_shape = (*img_shape[:-1], obs_trimmed.shape[-1])
         obs_reshape = obs_trimmed.view((T * B, *trimmed_img_shape))
         obs_preproc = self.preproc(obs_reshape)
-        obs_features = self.feature_extractor(obs_preproc)
-        if self.use_actions:
-            act_labels_flat = act.view((T * B, *act_shape))
-            action_features = self.action_preproc(act_labels_flat)
-            all_features = torch.cat((obs_features, action_features), dim=1)
-        else:
-            all_features = obs_features
-        lin_features = self.postproc(all_features)
-        logits = self.mt_logits(lin_features, obs.task_id)
-        assert logits.dim() == 2, logits.shape
-        flat_logits = logits.squeeze(1)
+        act_labels_flat = act.view((T * B, *act_shape))
 
-        flat_logits = restore_leading_dims(flat_logits, lead_dim, T, B)
+        return obs_preproc, act_labels_flat, (lead_dim, T, B)
+
+    def forward(self, obs, act, return_feats=False):
+        obs_preproc, act_labels_flat, restore_dim_args = self.preproc_obs_acts(
+            obs, act)
+
+        # now do actual learnt transform
+        flat_logits, all_features = self.forward_no_preproc(
+            obs_preproc, act_labels_flat, obs.task_id)
+
+        # finally, restore dims as necessary
+        flat_logits = restore_leading_dims(flat_logits, *restore_dim_args)
 
         if return_feats:
             return flat_logits, all_features
@@ -237,6 +288,8 @@ GAILInfo = namedtuple(
         'discLoss',
         'discXentLoss',
         'discWGANLoss',
+        'discGPGradNorm',
+        'discGPLoss',
         'discAcc',
         'discAccExpert',
         'discAccNovice',
@@ -275,7 +328,7 @@ def _compute_gail_stats(disc_logits, is_real_labels, is_wgan):
 class GAILOptimiser:
     def __init__(self, *, dataset_mt, discrim_model, buffer_num_samples,
                  batch_size, updates_per_itr, dev, aug_model, xfer_adv_weight,
-                 xfer_adv_anneal, xfer_adv_module, lr, use_wgan):
+                 xfer_adv_anneal, xfer_adv_module, lr, use_wgan, gp_weight):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -287,6 +340,7 @@ class GAILOptimiser:
         self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
         self.expert_batch_iter = repeat_dataset(self.expert_traj_loader)
         self.use_wgan = use_wgan
+        self.gp_weight = gp_weight
         self.xfer_adv_weight = xfer_adv_weight
         # if xfer_disc_anneal is True, then we anneal from 0 to 1
         self.xfer_disc_anneal = xfer_adv_anneal
@@ -458,15 +512,53 @@ class GAILOptimiser:
                 # - 0 is the *novice* label, and low = less expert-like
                 xent_loss = main_loss = F.binary_cross_entropy_with_logits(
                     logits, is_real_label, reduction='mean')
+
+            loss = main_loss
+
+            if self.gp_weight:
+                eps = torch.rand((sub_batch_size, )).to(self.dev)
+                preproc_obs, preproc_acts, _ = self.model.preproc_obs_acts(
+                    all_obs, all_acts)
+                interp_obs = hacky_interpolate(preproc_obs, eps,
+                                               sub_batch_size)
+                interp_acts = hacky_interpolate(preproc_acts, eps,
+                                                sub_batch_size)
+                interp_task_ids = hacky_interpolate(all_obs.task_id, eps,
+                                                    sub_batch_size)
+
+                # using the strategy from
+                # https://github.com/caogang/wgan-gp/blob/master/gan_mnist.py
+                # (also we only do this w.r.t images, not scalar inputs)
+                interp_obs_var = torch.autograd.Variable(interp_obs,
+                                                         requires_grad=True)
+                interp_logits, _ = self.model.forward_no_preproc(
+                    interp_obs_var, interp_acts, interp_task_ids)
+                start_grad = torch.ones((sub_batch_size, ), device=self.dev)
+                # FIXME(sam): I suspect retrain_graph and grad_outputs are not
+                # actually required. Should dig deeper some time.
+                grads_wrt_inputs, = torch.autograd.grad(
+                    outputs=interp_logits,
+                    inputs=[interp_obs_var],
+                    grad_outputs=start_grad,
+                    create_graph=True,
+                    retain_graph=True,
+                    only_inputs=True)
+                grads_wrt_inputs_flat = torch.flatten(grads_wrt_inputs,
+                                                      start_dim=1)
+                grad_norms = torch.sqrt(
+                    torch.sum(grads_wrt_inputs_flat**2, dim=1))
+                grad_penalty = torch.mean((grad_norms - 1.0)**2)
+                loss = loss + self.gp_weight * grad_penalty
+
+
             if self.xfer_adv_model:
                 if self.xfer_disc_anneal:
                     progress = min(1, max(0, itr / float(n_itr)))
                     xfer_adv_weight = progress * self.xfer_adv_weight
                 else:
                     xfer_adv_weight = self.xfer_adv_weight
-                loss = main_loss + xfer_adv_weight * xfer_loss
-            else:
-                loss = main_loss
+                loss = loss + xfer_adv_weight * xfer_loss
+
             loss.backward()
             self.opt.step()
 
@@ -480,6 +572,12 @@ class GAILOptimiser:
             else:
                 info_dict['discXentLoss'] = xent_loss.item()
                 info_dict['discWGANLoss'] = float('nan')
+            if self.gp_weight:
+                info_dict['discGPGradNorm'] = grad_norms.mean().item()
+                info_dict['discGPLoss'] = grad_penalty.item()
+            else:
+                info_dict['discGPGradNorm'] = float('nan')
+                info_dict['discGPLoss'] = float('nan')
             if self.xfer_adv_model:
                 info_dict['xferLoss'] = xfer_loss.item()
                 info_dict['xferAcc'] = xfer_acc.item()

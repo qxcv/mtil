@@ -161,6 +161,9 @@ def cli():
 @click.option("--disc-use-sn/--no-disc-use-sn",
               default=False,
               help="Use spectral norm for discriminator?")
+@click.option("--disc-gp-weight",
+              default=0.0,
+              help="weight for discriminator gradient penalty")
 @click.option(
     "--transfer-disc-anneal/--no-transfer-disc-anneal",
     # TODO: make this also work for the policy
@@ -192,6 +195,7 @@ def main(
         disc_use_bn,
         disc_net_attn,
         disc_use_sn,
+        disc_gp_weight,
         wgan,
         transfer_variants,
         transfer_disc_loss_weight,
@@ -370,6 +374,7 @@ def main(
                                    sampler_batch_T * sampler_batch_B),
                                batch_size=disc_batch_size,
                                updates_per_itr=disc_up_per_iter,
+                               gp_weight=disc_gp_weight,
                                dev=dev,
                                aug_model=aug_model,
                                lr=disc_lr,
