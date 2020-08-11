@@ -127,13 +127,13 @@ gail-mt:
   algo: gail
   multi: true
   args:
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
 
 gail-st:
   algo: gail
   multi: false
   args:
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
 
 ## WGAN-SN and SN
 
@@ -141,7 +141,7 @@ gail-st-wgan-sn:
   algo: gail
   multi: false
   args:
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
     # disable BN, since it wasn't used in original SNGAN paper
     disc_use_bn: False
     disc_use_sn: True
@@ -151,7 +151,7 @@ gail-st-sn:
   algo: gail
   multi: false
   args:
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
     disc_use_bn: False
     disc_use_sn: True
     wgan: False
@@ -163,14 +163,14 @@ gail-mt-allo:
   preproc: LoRes4A
   multi: true
   args:
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
 
 gail-st-allo:
   algo: gail
   preproc: LoRes4A
   multi: false
   args:
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
 
 ## Augmentation ablations
 
@@ -179,14 +179,14 @@ gail-mt-aug-none:
   multi: true
   args:
     disc_aug: none
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
 
 gail-st-aug-none:
   algo: gail
   multi: false
   args:
     disc_aug: none
-    disc_up_per_itr: 16
+    disc_up_per_iter: 16
 
 # "transfer GAIL" experiments (these didn't make it to the NeurIPS submission)
 # gail-trans:
