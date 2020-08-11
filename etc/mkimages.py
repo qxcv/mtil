@@ -7,9 +7,9 @@ import readline  # noqa: F401
 import click
 import gym
 import imageio
+from magical.benchmarks import (
+    DEMO_ENVS_TO_TEST_ENVS_MAP, EnvName, register_envs)
 from magical.saved_trajectories import load_demos
-from magical.benchmarks import (DEMO_ENVS_TO_TEST_ENVS_MAP, EnvName,
-                                 register_envs)
 import numpy as np
 import skimage
 import skimage.morphology
@@ -28,7 +28,7 @@ def make_rand_frames(env_name):
     try:
         frames = []
         for _ in range(RAND_FRAMES):
-            frame = env.reset()
+            frame = env.reset()['allo']
             resized = skimage.img_as_ubyte(
                 sktrans.resize(frame, (OUT_RES, OUT_RES)))
             frames.append(resized)
@@ -45,7 +45,7 @@ def get_all_variants(demo_env_name):
 def make_cont_dir(path):
     dirname = os.path.dirname(path)
     if dirname:
-        os.path.makedirs(dirname, exist_ok=True)
+        os.makedirs(dirname, exist_ok=True)
 
 
 def write_gif(path, frames, fps, loop=0):
@@ -160,8 +160,9 @@ def main(demos, dest):
         # format of demo_obs: (T, H, W, C)
         print('  Writing demo')
         demo_frames = np.stack([
-            skimage.img_as_ubyte(sktrans.resize(f, (OUT_RES, OUT_RES)))
-            for f in demo_dict['trajectory'].obs
+            skimage.img_as_ubyte(sktrans.resize(od['allo'],
+                                                (OUT_RES, OUT_RES)))
+            for od in demo_dict['trajectory'].obs
         ],
                                axis=0)
         demo_out = 'demo-' + name_data.env_name.lower() + '.gif'
@@ -190,9 +191,7 @@ def main(demos, dest):
 
         demo_montage_out = 'demo-mont-' + name_data.env_name.lower() + '.png'
         tgt_frames = 5
-        indices = np.linspace(0,
-                              len(trunc_demo_frames) - 1,
-                              tgt_frames)
+        indices = np.linspace(0, len(trunc_demo_frames) - 1, tgt_frames)
         indices = np.round(indices).astype('int64')
         sel_frames = trunc_demo_frames[indices]
         # stack them horizontally
