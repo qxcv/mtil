@@ -123,16 +123,15 @@ def cli():
     # TODO: add choices for this too (see --disc-aug note)
     default="none",
     help="augmentations to use for PPO (if any)")
-@click.option(
-    "--ppo-use-bn/--no-ppo-use-bn",
-    default=False,
-    help="should policy/VF use batch norm?")
-@click.option(
-    "--ppo-minibatches", default=4,
-    help="number of minibatches to split each PPO batch into")
-@click.option(
-    "--ppo-epochs", default=4,
-    help="number of PPO 'epochs' to train for at each PPO update")
+@click.option("--ppo-use-bn/--no-ppo-use-bn",
+              default=False,
+              help="should policy/VF use batch norm?")
+@click.option("--ppo-minibatches",
+              default=4,
+              help="number of minibatches to split each PPO batch into")
+@click.option("--ppo-epochs",
+              default=4,
+              help="number of PPO 'epochs' to train for at each PPO update")
 @click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
 @click.option('--ppo-gamma', default=0.95, help='PPO discount factor (gamma)')
 @click.option('--ppo-lambda', default=0.95, help='PPO GAE lamdba')
@@ -156,11 +155,18 @@ def cli():
 @click.option("--transfer-pol-loss-weight",
               default=1e-1,
               help='transfer loss weight for disc. (with --transfer-variant)')
-@click.option("--transfer-disc-anneal/--no-transfer-disc-anneal",
-              # TODO: make this also work for the policy
+@click.option("--wgan/--no-wgan",
               default=False,
-              help="anneal disc transfer loss from 0 to whatever "
-              "--transfer-disc-weight is")
+              help="use WGAN loss instead of GAN loss?")
+@click.option("--disc-use-sn/--no-disc-use-sn",
+              default=False,
+              help="Use spectral norm for discriminator?")
+@click.option(
+    "--transfer-disc-anneal/--no-transfer-disc-anneal",
+    # TODO: make this also work for the policy
+    default=False,
+    help="anneal disc transfer loss from 0 to whatever "
+    "--transfer-disc-weight is")
 @click.argument("demos", nargs=-1, required=True)
 def main(
         demos,
@@ -185,6 +191,8 @@ def main(
         ppo_aug,
         disc_use_bn,
         disc_net_attn,
+        disc_use_sn,
+        wgan,
         transfer_variants,
         transfer_disc_loss_weight,
         transfer_pol_loss_weight,
@@ -273,10 +281,11 @@ def main(
         # dropout, use_bn, width, etc.)
         attention=disc_net_attn,
         use_bn=disc_use_bn,
+        use_sn=disc_use_sn,
     ).to(dev)
 
-    if not transfer_variants \
-      and (transfer_disc_loss_weight or transfer_pol_loss_weight):
+    if (not transfer_variants
+            and (transfer_disc_loss_weight or transfer_pol_loss_weight)):
         print("No xfer variants supplied, setting xfer disc loss term to zero")
         transfer_disc_loss_weight = 0.0
         transfer_pol_loss_weight = 0.0
@@ -289,7 +298,8 @@ def main(
         xfer_adv_module = None
 
     reward_model_mt = RewardModel(discriminator_mt, xfer_adv_module,
-                                  transfer_pol_loss_weight).to(dev)
+                                  transfer_pol_loss_weight,
+                                  use_wgan=wgan).to(dev)
     reward_evaluator_mt = RewardEvaluatorMT(
         task_ids_and_names=task_ids_and_demo_env_names,
         reward_model=reward_model_mt,
@@ -365,7 +375,8 @@ def main(
                                lr=disc_lr,
                                xfer_adv_weight=transfer_disc_loss_weight,
                                xfer_adv_anneal=transfer_disc_anneal,
-                               xfer_adv_module=xfer_adv_module)
+                               xfer_adv_module=xfer_adv_module,
+                               use_wgan=wgan)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards

@@ -149,6 +149,7 @@ class MILBenchFeatureNetwork(nn.Module):
                  dropout=None,
                  coord_conv=False,
                  attention=False,
+                 use_sn=False,
                  width=2,
                  ActivationCls=torch.nn.ReLU):
         super().__init__()
@@ -262,7 +263,15 @@ class MILBenchFeatureNetwork(nn.Module):
         if dropout:
             # also include dropout on the FC layer
             reduction_layers.append(nn.Dropout(dropout))
-        self.feature_generator = nn.Sequential(*conv_layers, *reduction_layers)
+        all_layers = [*conv_layers, *reduction_layers]
+        if use_sn:
+            new_layers = []
+            for layer in all_layers:
+                if isinstance(layer, (nn.Conv2d, nn.Linear)):
+                    layer = nn.utils.spectral_norm(layer)
+                new_layers.append(layer)
+            all_layers = new_layers
+        self.feature_generator = nn.Sequential(*all_layers)
 
     def forward(self, x):
         flat_feats = self.feature_generator(x)
@@ -274,7 +283,7 @@ class MultiTaskAffineLayer(nn.Module):
     weights for each of `n_tasks` tasks. On the forward pass, it takes a batch
     of task IDs in addition to a batch of feature inputs, and uses those to
     look up the appropriate affine transform to apply to each batch element."""
-    def __init__(self, in_chans, out_chans, n_tasks):
+    def __init__(self, in_chans, out_chans, n_tasks, use_sn=False):
         super().__init__()
 
         # these "embeddings" are actually affine transformation parameters,
@@ -309,6 +318,20 @@ class MultiTaskAffineLayer(nn.Module):
         result = mm_result + biases
 
         return result
+
+
+class SingleTaskAffineLayer(nn.Module):
+    """MultiTaskAffineLayer-compatible layer that works only for a _single_
+    task."""
+    def __init__(self, in_chans, out_chans, use_sn):
+        super().__init__()
+        lin_layer = nn.Linear(in_chans, out_chans)
+        if use_sn:
+            lin_layer = nn.utils.spectral_norm(lin_layer)
+        self.lin_layer = lin_layer
+
+    def forward(self, inputs, task_ids):
+        return self.lin_layer(inputs)
 
 
 class MultiHeadPolicyNet(nn.Module):

@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 from mtil.demos import make_loader_mt
 from mtil.models import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
-                         MultiTaskAffineLayer)
+                         MultiTaskAffineLayer, SingleTaskAffineLayer)
 from mtil.utils.misc import tree_map
 from mtil.utils.torch import repeat_dataset
 
@@ -82,6 +82,7 @@ class MILBenchDiscriminatorMT(nn.Module):
             act_dim,
             use_actions,
             use_all_chans,
+            use_sn,
             fc_dim=256,
             act_rep_dim=32,
             ActivationCls=torch.nn.ReLU,
@@ -94,6 +95,7 @@ class MILBenchDiscriminatorMT(nn.Module):
         self.use_all_chans = use_all_chans
         self.use_actions = use_actions
         self.preproc = MILBenchPreprocLayer()
+        self.use_sn = use_sn
         # feature extractor gives us 1024-dim features
         if use_all_chans:
             feat_in_chans = in_chans
@@ -104,6 +106,7 @@ class MILBenchDiscriminatorMT(nn.Module):
         self.feature_extractor = MILBenchFeatureNetwork(
             in_chans=feat_in_chans,
             out_chans=fc_dim,
+            use_sn=use_sn,
             ActivationCls=ActivationCls,
             **feat_gen_kwargs)
         if self.use_actions:
@@ -119,14 +122,22 @@ class MILBenchDiscriminatorMT(nn.Module):
             extra_dim = 0
         # the logit generator takes in both the image features and the
         # action encoding
+        reduce_layer = nn.Linear(fc_dim + extra_dim, fc_dim)
+        if use_sn:
+            reduce_layer = nn.utils.spectral_norm(reduce_layer)
         self.postproc = nn.Sequential(
-            nn.Linear(fc_dim + extra_dim, fc_dim),
+            reduce_layer,
             ActivationCls(),
             # now: flat fc_dim-elem vector
         )
         self.ret_feats_dim = fc_dim + extra_dim
-        self.mt_logits = MultiTaskAffineLayer(fc_dim, 1,
-                                              len(self.task_ids_and_names))
+        if use_sn:
+            assert len(self.task_ids_and_names) == 1, \
+                "SN only supported in single-task setting, for now"
+            self.mt_logits = SingleTaskAffineLayer(fc_dim, 1, use_sn=use_sn)
+        else:
+            self.mt_logits = MultiTaskAffineLayer(fc_dim, 1,
+                                                  len(self.task_ids_and_names))
 
     def forward(self, obs, act, return_feats=False):
         # this only handles images
@@ -167,11 +178,13 @@ class MILBenchDiscriminatorMT(nn.Module):
 class RewardModel(nn.Module):
     """Takes a binary discriminator module producing logits (with high = real
     demo)."""
-    def __init__(self, discrim, domain_xfer_model, domain_xfer_weight):
+    def __init__(self, discrim, domain_xfer_model, domain_xfer_weight,
+                 use_wgan):
         super().__init__()
         self.discrim = discrim
         self.domain_xfer_model = domain_xfer_model
         self.domain_xfer_weight = domain_xfer_weight
+        self.use_wgan = use_wgan
         if self.domain_xfer_weight:
             assert domain_xfer_model is not None
 
@@ -202,13 +215,18 @@ class RewardModel(nn.Module):
             rewards = base_rewards + self.domain_xfer_weight * xfer_losses
         else:
             sigmoid_logits = self.discrim(obs, act, *args, **kwargs)
-            # In the GAIL paper they use this as the cost (i.e. they minimise
-            # it). I'm maximising it to be consistent with the reference
-            # implementation, where the conventions for discriminator output
-            # are reversed (so high = expert & low = novice by default,
-            # although they do also have a switch that can flip the convention
-            # for environments with early termination).
-            rewards = F.logsigmoid(sigmoid_logits)
+            if self.use_wgan:
+                # in WGAIL we just try to maximise the discriminator output
+                rewards = sigmoid_logits
+            else:
+                # In the GAIL paper they use this as the cost (i.e. they
+                # minimise it). I'm maximising it to be consistent with the
+                # reference implementation, where the conventions for
+                # discriminator output are reversed (so high = expert & low =
+                # novice by default, although they do also have a switch that
+                # can flip the convention for environments with early
+                # termination).
+                rewards = F.logsigmoid(sigmoid_logits)
         return rewards
 
 
@@ -216,7 +234,9 @@ GAILInfo = namedtuple(
     'GAILInfo',
     [
         # these are the names that should be written to the log
-        'discMeanXEnt',
+        'discLoss',
+        'discXentLoss',
+        'discWGANLoss',
         'discAcc',
         'discAccExpert',
         'discAccNovice',
@@ -229,7 +249,7 @@ GAILInfo = namedtuple(
     ])
 
 
-def _compute_gail_stats(disc_logits, is_real_labels):
+def _compute_gail_stats(disc_logits, is_real_labels, is_wgan):
     """Returns dict for use in constructing GAILInfo later on. Provides a dict
     containing every field except discMeanXEnt."""
     # Reminder: in GAIL, high output = predicted to be from expert. In arrays
@@ -245,7 +265,8 @@ def _compute_gail_stats(disc_logits, is_real_labels):
         discFracExpertTrue=(torch.sum(real_labels) / real_labels.shape[0]),
         discFracExpertPred=(torch.sum(pred_labels) / pred_labels.shape[0]),
         discMeanLabelEnt=-torch.mean(
-            torch.sigmoid(disc_logits) * F.logsigmoid(disc_logits)),
+            torch.sigmoid(disc_logits) * F.logsigmoid(disc_logits))
+        if is_wgan else torch.as_tensor(float('nan')),
     )
     np_dict = {k: v.item() for k, v in torch_dict.items()}
     return np_dict
@@ -254,7 +275,7 @@ def _compute_gail_stats(disc_logits, is_real_labels):
 class GAILOptimiser:
     def __init__(self, *, dataset_mt, discrim_model, buffer_num_samples,
                  batch_size, updates_per_itr, dev, aug_model, xfer_adv_weight,
-                 xfer_adv_anneal, xfer_adv_module, lr):
+                 xfer_adv_anneal, xfer_adv_module, lr, use_wgan):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -265,6 +286,7 @@ class GAILOptimiser:
         self.aug_model = aug_model
         self.expert_traj_loader = make_loader_mt(dataset_mt, batch_size // 2)
         self.expert_batch_iter = repeat_dataset(self.expert_traj_loader)
+        self.use_wgan = use_wgan
         self.xfer_adv_weight = xfer_adv_weight
         # if xfer_disc_anneal is True, then we anneal from 0 to 1
         self.xfer_disc_anneal = xfer_adv_anneal
@@ -405,45 +427,59 @@ class GAILOptimiser:
             else:
                 logits = self.model(all_obs, all_acts)
 
-            # GAIL discriminator *objective* is E_fake[log D(s,a)] +
-            # E_expert[log(1-D(s,a))]. You actually want to maximise this; in
-            # reality the "loss" to be minimised is -E_fake[log D(s,a)] -
-            # E_expert[log(1-D(s,a))].
-            #
-            # binary_cross_entropy_with_logits computes -labels *
-            # log(sigmoid(logits)) - (1 - labels) * log(1-sigmoid(logits)) (per
-            # PyTorch docs). In other words:
-            #   -y * log D(s,a) - (1 - y) * log(1 - D(s, a))
-            #
-            # Hence, GAIL is like logistic regression with label 1 for the
-            # novice and 0 for the expert. This is kind of weird, because you
-            # actually want to *minimise* the discriminator's output. Indeed,
-            # in the actual implementation, they flip this & use 1 for the
-            # expert and 0 for the novice.
+            if self.use_wgan:
+                # Now assign label +1 for novice, -1 for expert. This means we
+                # are trying to push novice scores down, and expert scores up
+                # (I don't know whether this matches the original paper).
+                pm_labels = 1 - 2 * is_real_label
+                wgan_loss = main_loss = torch.mean(pm_labels * logits)
+            else:
+                # GAIL discriminator *objective* is E_fake[log D(s,a)] +
+                # E_expert[log(1-D(s,a))]. You actually want to maximise this;
+                # in reality the "loss" to be minimised is -E_fake[log D(s,a)]
+                # - E_expert[log(1-D(s,a))].
+                #
+                # binary_cross_entropy_with_logits computes -labels *
+                # log(sigmoid(logits)) - (1 - labels) * log(1-sigmoid(logits))
+                # (per PyTorch docs). In other words: -y * log D(s,a) - (1 - y)
+                # * log(1 - D(s, a))
+                #
+                # Hence, GAIL is like logistic regression with label 1 for the
+                # novice and 0 for the expert. This is kind of weird, because
+                # you actually want to *minimise* the discriminator's output.
+                # Indeed, in the actual implementation, they flip this & use 1
+                # for the expert and 0 for the novice.
 
-            # In light of all the above, I'm using the OPPOSITE convention to
-            # the paper, but the same convention as the implementation. To wit:
-            #
-            # - 1 is the *expert* label, and high = more expert-like
-            # - 0 is the *novice* label, and low = less expert-like
-            xent_loss = F.binary_cross_entropy_with_logits(logits,
-                                                           is_real_label,
-                                                           reduction='mean')
+                # In light of all the above, I'm using the OPPOSITE convention
+                # to the paper, but the same convention as the implementation.
+                # To wit:
+                #
+                # - 1 is the *expert* label, and high = more expert-like
+                # - 0 is the *novice* label, and low = less expert-like
+                xent_loss = main_loss = F.binary_cross_entropy_with_logits(
+                    logits, is_real_label, reduction='mean')
             if self.xfer_adv_model:
                 if self.xfer_disc_anneal:
                     progress = min(1, max(0, itr / float(n_itr)))
                     xfer_adv_weight = progress * self.xfer_adv_weight
                 else:
                     xfer_adv_weight = self.xfer_adv_weight
-                loss = xent_loss + xfer_adv_weight * xfer_loss
+                loss = main_loss + xfer_adv_weight * xfer_loss
             else:
-                loss = xent_loss
+                loss = main_loss
             loss.backward()
             self.opt.step()
 
             # for logging; we'll average theses later
-            info_dict = _compute_gail_stats(logits, is_real_label)
-            info_dict['discMeanXEnt'] = loss.item()
+            info_dict = _compute_gail_stats(logits, is_real_label,
+                                            self.use_wgan)
+            info_dict['discLoss'] = loss.item()
+            if self.use_wgan:
+                info_dict['discXentLoss'] = float('nan')
+                info_dict['discWGANLoss'] = wgan_loss.item()
+            else:
+                info_dict['discXentLoss'] = xent_loss.item()
+                info_dict['discWGANLoss'] = float('nan')
             if self.xfer_adv_model:
                 info_dict['xferLoss'] = xfer_loss.item()
                 info_dict['xferAcc'] = xfer_acc.item()
