@@ -418,7 +418,8 @@ def main(
         # FIXME(sam): pass n_acts, obs_chans, lr to AETrainer
         ae_trainer = AETrainer(discriminator=discriminator_mt,
                                disc_out_size=disc_final_feats_dim,
-                               data_batch_iter=gail_optim.expert_batch_iter)
+                               data_batch_iter=gail_optim.expert_batch_iter,
+                               dev=dev)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards
@@ -519,18 +520,7 @@ def main(
 
         # note that periodic snapshots get saved by GAILMiniBatchRl, thanks to
         # the overridden get_itr_snapshot() method
-        import traceback, sys, code
-
-        try:
-            runner.train(cb_startup=init_policy_cb)
-        except:
-            type, value, tb = sys.exc_info()
-            traceback.print_exc()
-            last_frame = lambda tb=tb: last_frame(tb.tb_next) if tb.tb_next else tb
-            frame = last_frame().tb_frame
-            ns = dict(frame.f_globals)
-            ns.update(frame.f_locals)
-            code.interact(local=ns)
+        runner.train(cb_startup=init_policy_cb)
 
 
 if __name__ == '__main__':

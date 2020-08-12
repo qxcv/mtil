@@ -288,6 +288,7 @@ class AETrainer:
             discriminator,
             disc_out_size,
             data_batch_iter,
+            dev,
             # FIXME(sam): should infer these parameters from data
             # and/or env spec
             n_acts=18,
@@ -296,16 +297,21 @@ class AETrainer:
     ):
         self.discriminator = discriminator
         self.data_batch_iter = data_batch_iter
-        self.decoder = MILBenchDiscDecoder(disc_out_size, n_acts, obs_chans)
+        self.dev = dev
+        self.decoder = MILBenchDiscDecoder(disc_out_size, n_acts, obs_chans) \
+            .to(self.dev)
         all_parameters = list(self.discriminator.parameters()) \
             + list(self.decoder.parameters())
         self.opt = torch.optim.Adam(all_parameters, lr=lr)
         self.im_to_float = MILBenchPreprocLayer()
 
+    def _to_dev(self, item):
+        return tree_map(lambda *args: torch.cat(args, 0).to(self.dev), item)
+
     def train_step(self):
         data_batch = next(self.data_batch_iter)
-        obs_tup = data_batch['obs']
-        act_labels = data_batch['acts']
+        obs_tup = self._to_dev(data_batch['obs'])
+        act_labels = self._to_dev(data_batch['acts'])
 
         _, features = self.discriminator(obs_tup,
                                          act_labels,
@@ -339,8 +345,8 @@ class AETrainer:
     def make_montage(self, out_path):
         # make a montage showing original observations and their reproductions
         data_batch = next(self.data_batch_iter)
-        obs_tup = data_batch['obs']
-        act_labels = data_batch['acts']
+        obs_tup = self._to_dev(data_batch['obs'])
+        act_labels = self._to_dev(data_batch['acts'])
         with torch.no_grad():
             _, features = self.discriminator(obs_tup,
                                              act_labels,
@@ -351,6 +357,7 @@ class AETrainer:
         # convert originals from byte to float
         float_orig_obs = self.im_to_float(obs_tup.observation)
         all_images = torch.cat((float_orig_obs, out_image_clip), dim=0)
+        all_images = all_images.detach().cpu()
         stack_depth = all_images.size(1) // 3
         all_images_stacked = all_images.view(
             (all_images.shape[0] * stack_depth, 3, *all_images.shape[2:]))
