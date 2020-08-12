@@ -15,8 +15,9 @@ from rlpyt.utils.logging import logger
 import torch
 
 from mtil.algos.mtgail.embedded_bc import BCCustomRewardPPO
-from mtil.algos.mtgail.mtgail import (GAILMinibatchRl, GAILOptimiser,
-                                      MILBenchDiscriminatorMT, RewardModel)
+from mtil.algos.mtgail.mtgail import (AETrainer, GAILMinibatchRl,
+                                      GAILOptimiser, MILBenchDiscriminatorMT,
+                                      RewardModel)
 from mtil.augmentation import MILBenchAugmentations
 from mtil.demos import get_demos_meta, make_loader_mt
 from mtil.domain_transfer import BinaryDomainLossModule
@@ -175,6 +176,9 @@ def cli():
 @click.option("--disc-gp-weight",
               default=0.0,
               help="weight for discriminator gradient penalty")
+@click.option("--disc-ae-pretrain-iters",
+              default=0,
+              help="num batches of autoencoder pretraining for discrim")
 @click.option(
     "--transfer-disc-anneal/--no-transfer-disc-anneal",
     # TODO: make this also work for the policy
@@ -210,6 +214,7 @@ def main(
         disc_al,
         disc_al_dim,
         disc_al_nsamples,
+        disc_ae_pretrain_iters,
         wgan,
         transfer_variants,
         transfer_disc_loss_weight,
@@ -289,6 +294,8 @@ def main(
                                        model_kwargs=policy_kwargs))
 
     print("Setting up discriminator/reward model")
+    disc_fc_dim = 256
+    disc_final_feats_dim = disc_al_dim if disc_al else disc_fc_dim
     discriminator_mt = MILBenchDiscriminatorMT(
         task_ids_and_names=task_ids_and_demo_env_names,
         in_chans=policy_kwargs['in_chans'],
@@ -300,7 +307,8 @@ def main(
         attention=disc_net_attn,
         use_bn=disc_use_bn,
         use_sn=disc_use_sn,
-        final_feats_dim=disc_al_dim if disc_al else None,
+        fc_dim=disc_fc_dim,
+        final_feats_dim=disc_final_feats_dim,
     ).to(dev)
 
     if (not transfer_variants
@@ -406,6 +414,12 @@ def main(
         final_layer_only_mode_n_samples=disc_al_nsamples,
         use_wgan=wgan)
 
+    if disc_ae_pretrain_iters:
+        # FIXME(sam): pass n_acts, obs_chans, lr to AETrainer
+        ae_trainer = AETrainer(discriminator=discriminator_mt,
+                               disc_out_size=disc_final_feats_dim,
+                               data_batch_iter=gail_optim.expert_batch_iter)
+
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards
     runner = GAILMinibatchRl(
@@ -492,9 +506,31 @@ def main(
         torch.save(
             discriminator_mt,
             os.path.join(logger.get_snapshot_dir(), 'full_discrim_model.pt'))
+
+        if disc_ae_pretrain_iters:
+            # FIXME(sam): come up with a better solution for creating these
+            # montages (can I do it regularly? Should I put them somewhere
+            # other than the snapshot dir?).
+            ae_trainer.make_montage(
+                os.path.join(logger.get_snapshot_dir(), 'ae-before.png'))
+            ae_trainer.do_full_training(disc_ae_pretrain_iters)
+            ae_trainer.make_montage(
+                os.path.join(logger.get_snapshot_dir(), 'ae-after.png'))
+
         # note that periodic snapshots get saved by GAILMiniBatchRl, thanks to
         # the overridden get_itr_snapshot() method
-        runner.train(cb_startup=init_policy_cb)
+        import traceback, sys, code
+
+        try:
+            runner.train(cb_startup=init_policy_cb)
+        except:
+            type, value, tb = sys.exc_info()
+            traceback.print_exc()
+            last_frame = lambda tb=tb: last_frame(tb.tb_next) if tb.tb_next else tb
+            frame = last_frame().tb_frame
+            ns = dict(frame.f_globals)
+            ns.update(frame.f_locals)
+            code.interact(local=ns)
 
 
 if __name__ == '__main__':

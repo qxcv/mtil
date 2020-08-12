@@ -278,6 +278,79 @@ class MILBenchFeatureNetwork(nn.Module):
         return flat_feats
 
 
+class Upscale2x(nn.Module):
+    """Upscales its input by a factor of two."""
+    def forward(self, tensor):
+        assert tensor.ndim == 4
+        return F.interpolate(tensor, scale_factor=2, mode='nearest')
+
+
+class Reshape(nn.Module):
+    """Reshape a batch tensor into some desired shape."""
+    def __init__(self, shape):
+        super().__init__()
+        self.shape = shape
+
+    def forward(self, tensor):
+        return tensor.view(tensor.shape[:1] + self.shape)
+
+
+class FeatureUpscaleNetwork(nn.Module):
+    """Simple up-scaling network to use in autoencoders, etc. Designed to
+    produce 96x96 outputs from a flat input vector (so implicitly
+    MAGICAL-specific)."""
+    def __init__(self, in_chans, out_chans, use_bn=False, width=2):
+        super().__init__()
+        self.width = width
+        self.in_chans = in_chans
+        self.out_chans = out_chans
+        self.use_bn = use_bn
+
+        def conv_block(in_chans, out_chans, activ=True, use_bn=use_bn):
+            out_blocks = [
+                nn.Conv2d(in_chans,
+                          out_chans, (3, 3),
+                          stride=1,
+                          padding=1,
+                          padding_mode='reflect'),
+            ]
+            if use_bn:
+                out_blocks.append(nn.BatchNorm2d(out_chans))
+            if activ:
+                out_blocks.append(nn.ReLU())
+            return out_blocks
+
+        # sizes will go 6x6 -> 12x12 -> 24x24 -> 48x48 -> 96x96
+        self.architecture = nn.Sequential(
+            nn.Linear(in_chans, self.width * 64),
+            nn.Linear(self.width * 64, self.width * 32 * 6 * 6),
+            Reshape((self.width * 32, 6, 6)),
+            Upscale2x(),
+            # now we're at 12*12
+            *conv_block(self.width * 32, self.width * 32),
+            *conv_block(self.width * 32, self.width * 32),
+            Upscale2x(),
+            # now we're at 24*24
+            *conv_block(self.width * 32, self.width * 32),
+            *conv_block(self.width * 32, self.width * 16),
+            Upscale2x(),
+            # now we're at 48x48
+            *conv_block(self.width * 16, self.width * 16),
+            *conv_block(self.width * 16, self.width * 16),
+            Upscale2x(),
+            # now we're at 96x96
+            *conv_block(self.width * 16, self.width * 16),
+            # final layer is linear (no ReLU)
+            *conv_block(
+                self.width * 16, self.out_chans, activ=False, use_bn=False),
+        )
+
+    def forward(self, in_vector):
+        # must receive flat vector
+        assert in_vector.ndim == 2
+        return self.architecture(in_vector)
+
+
 class MultiTaskAffineLayer(nn.Module):
     """A multi-task version of torch.nn.Linear. It keeps a separate set of
     weights for each of `n_tasks` tasks. On the forward pass, it takes a batch

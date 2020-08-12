@@ -14,10 +14,12 @@ from rlpyt.utils.tensor import infer_leading_dims, restore_leading_dims
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torchvision.utils as vis_utils
 
 from mtil.demos import make_loader_mt
-from mtil.models import (MILBenchFeatureNetwork, MILBenchPreprocLayer,
-                         MultiTaskAffineLayer, SingleTaskAffineLayer)
+from mtil.models import (FeatureUpscaleNetwork, MILBenchFeatureNetwork,
+                         MILBenchPreprocLayer, MultiTaskAffineLayer,
+                         SingleTaskAffineLayer)
 from mtil.utils.misc import tree_map
 from mtil.utils.torch import repeat_dataset
 
@@ -194,7 +196,7 @@ class MILBenchDiscriminatorMT(nn.Module):
         assert logits.dim() == 2, logits.shape
         flat_logits = logits.squeeze(1)
 
-        return flat_logits, all_features
+        return flat_logits, all_features, lin_features
 
     def preproc_obs_acts(self, obs, act):
         # this only handles images
@@ -217,20 +219,146 @@ class MILBenchDiscriminatorMT(nn.Module):
 
         return obs_preproc, act_labels_flat, (lead_dim, T, B)
 
-    def forward(self, obs, act, return_feats=False):
+    def forward(self, obs, act, return_feats=False, return_final_feats=False):
         obs_preproc, act_labels_flat, restore_dim_args = self.preproc_obs_acts(
             obs, act)
 
         # now do actual learnt transform
-        flat_logits, all_features = self.forward_no_preproc(
+        flat_logits, all_features, lin_features = self.forward_no_preproc(
             obs_preproc, act_labels_flat, obs.task_id)
 
         # finally, restore dims as necessary
         flat_logits = restore_leading_dims(flat_logits, *restore_dim_args)
 
+        # FIXME(sam): this is incredibly hacky, there has to be a better way of
+        # doing this
+        rv = (flat_logits, )
         if return_feats:
-            return flat_logits, all_features
-        return flat_logits
+            rv += (all_features, )
+        if return_final_feats:
+            rv += (lin_features, )
+        if len(rv) == 1:
+            return rv[0]
+        return rv
+
+
+class MILBenchDiscDecoder(nn.Module):
+    """Decoder that maps features from discriminator to observation and
+    actions."""
+    def __init__(self, disc_features, act_dim, obs_chans, width=2,
+                 use_bn=True):
+        super().__init__()
+        self.preproc = nn.Sequential(
+            nn.Linear(disc_features, width * 64),
+            nn.ReLU(),
+            nn.Linear(width * 64, width * 64),
+            nn.ReLU(),
+        )
+        self.image_upscale = FeatureUpscaleNetwork(width * 64,
+                                                   out_chans=obs_chans,
+                                                   use_bn=use_bn,
+                                                   width=width)
+        # action decoder is just a linear layer
+        self.action_decode = nn.Linear(width * 64, act_dim)
+
+    def forward(self, features):
+        trunk_features = self.preproc(features)
+        recovered_image = self.image_upscale(trunk_features)
+        action_logits = self.action_decode(trunk_features)
+        return recovered_image, action_logits
+
+
+def autoencoder_loss(true_image, true_action_label, out_image,
+                     out_action_logits):
+    """Loss for a simple autoencoder (not a VAE)."""
+    image_dist = torch.mean((true_image - out_image)**2)
+    # n_actions = out_action_logits.shape[1]
+    # one_hot_mat = torch.eye(n_actions, device=true_image.device)
+    # one_hot_acts = one_hot_mat[true_action_label]
+    action_log_likelihood = F.cross_entropy(input=out_action_logits,
+                                            target=true_action_label,
+                                            reduction='mean')
+    return image_dist + action_log_likelihood
+
+
+class AETrainer:
+    """Train an autoencoder on some expert samples."""
+    def __init__(
+            self,
+            discriminator,
+            disc_out_size,
+            data_batch_iter,
+            # FIXME(sam): should infer these parameters from data
+            # and/or env spec
+            n_acts=18,
+            obs_chans=12,
+            lr=3e-4,  # YOLO
+    ):
+        self.discriminator = discriminator
+        self.data_batch_iter = data_batch_iter
+        self.decoder = MILBenchDiscDecoder(disc_out_size, n_acts, obs_chans)
+        all_parameters = list(self.discriminator.parameters()) \
+            + list(self.decoder.parameters())
+        self.opt = torch.optim.Adam(all_parameters, lr=lr)
+        self.im_to_float = MILBenchPreprocLayer()
+
+    def train_step(self):
+        data_batch = next(self.data_batch_iter)
+        obs_tup = data_batch['obs']
+        act_labels = data_batch['acts']
+
+        _, features = self.discriminator(obs_tup,
+                                         act_labels,
+                                         return_final_feats=True)
+        out_image, out_action_logits = self.decoder(features)
+
+        float_orig_obs = self.im_to_float(obs_tup.observation)
+        loss = autoencoder_loss(float_orig_obs, act_labels, out_image,
+                                out_action_logits)
+        self.opt.zero_grad()
+        loss.backward()
+        self.opt.step()
+
+        return loss.item()
+
+    def do_full_training(self, n_batches):
+        old_training = self.discriminator.training
+        self.discriminator.train()
+        losses = []
+        for batch_num in range(n_batches):
+            loss = self.train_step()
+            losses.append(loss)
+            if len(losses) >= 32:
+                # print every 32 rounds
+                mean_loss = np.mean(losses)
+                losses = []
+                prog_pct = (batch_num + 1) / n_batches * 100
+                print(f"Mean loss ({prog_pct:.2f}% done):", mean_loss)
+        self.discriminator.train(old_training)
+
+    def make_montage(self, out_path):
+        # make a montage showing original observations and their reproductions
+        data_batch = next(self.data_batch_iter)
+        obs_tup = data_batch['obs']
+        act_labels = data_batch['acts']
+        with torch.no_grad():
+            _, features = self.discriminator(obs_tup,
+                                             act_labels,
+                                             return_final_feats=True)
+            out_image, out_action_logits = self.decoder(features)
+            out_image_clip = torch.clamp(out_image, -1.0, 1.0)
+
+        # convert originals from byte to float
+        float_orig_obs = self.im_to_float(obs_tup.observation)
+        all_images = torch.cat((float_orig_obs, out_image_clip), dim=0)
+        stack_depth = all_images.size(1) // 3
+        all_images_stacked = all_images.view(
+            (all_images.shape[0] * stack_depth, 3, *all_images.shape[2:]))
+
+        vis_utils.save_image(all_images_stacked,
+                             out_path,
+                             range=(-1.0, 1.0),
+                             normalize=True)
 
 
 class RewardModel(nn.Module):
@@ -629,7 +757,7 @@ class GAILOptimiser:
                 # (also we only do this w.r.t images, not scalar inputs)
                 interp_obs_var = torch.autograd.Variable(interp_obs,
                                                          requires_grad=True)
-                interp_logits, _ = self.model.forward_no_preproc(
+                interp_logits, _, _ = self.model.forward_no_preproc(
                     interp_obs_var, interp_acts, interp_task_ids)
                 start_grad = torch.ones((sub_batch_size, ), device=self.dev)
                 # FIXME(sam): I suspect retrain_graph and grad_outputs are not
