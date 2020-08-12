@@ -1,0 +1,34 @@
+# These are experiments I ran for R1 during the NeurIPS rebuttal.
+
+gail-st-5e5:
+  algo: gail
+  multi: false
+  nseeds: 3
+  env-subset: ['fix-color', 'move-to-corner', 'move-to-region']
+  args:
+    disc_up_per_iter: 16
+    total_n_steps: 500000
+
+gail-st-5e5-wgan-gp:
+  algo: gail
+  multi: false
+  nseeds: 3
+  env-subset: ['fix-color', 'move-to-corner', 'move-to-region']
+  args:
+    disc_up_per_iter: 16
+    total_n_steps: 500000
+    wgan: True
+    disc_gp_weight: 100.0
+
+gail-st-5e5-al:
+  algo: gail
+  multi: false
+  nseeds: 3
+  env-subset: ['fix-color', 'move-to-corner', 'move-to-region']
+  args:
+    disc_up_per_iter: 1
+    total_n_steps: 500000
+    disc_al: True
+    disc_al_dim: 32
+    disc_al_nsamples: 512
+    disc_ae_pretrain_iters: 8192
