@@ -96,6 +96,17 @@ def cli():
     default="all",
     # TODO: add choices for this, like in mtbc/__main__.py
     help="choose augmentation for discriminator")
+@click.option("--disc-al/--no-disc-al",
+              default=False,
+              help="use apprenticeship learning mode")
+@click.option(
+    "--disc-al-dim",
+    default=16,
+    # FIXME(sam): I have no fucking idea what this should be
+    help="feature dimension for apprenticeship learning")
+@click.option("--disc-al-nsamples",
+              default=256,
+              help="num data points to compute AL weights")
 @click.option("--danger-debug-reward-weight",
               type=float,
               default=None,
@@ -196,6 +207,9 @@ def main(
         disc_net_attn,
         disc_use_sn,
         disc_gp_weight,
+        disc_al,
+        disc_al_dim,
+        disc_al_nsamples,
         wgan,
         transfer_variants,
         transfer_disc_loss_weight,
@@ -286,6 +300,7 @@ def main(
         attention=disc_net_attn,
         use_bn=disc_use_bn,
         use_sn=disc_use_sn,
+        final_feats_dim=disc_al_dim if disc_al else None,
     ).to(dev)
 
     if (not transfer_variants
@@ -301,9 +316,14 @@ def main(
     else:
         xfer_adv_module = None
 
-    reward_model_mt = RewardModel(discriminator_mt, xfer_adv_module,
-                                  transfer_pol_loss_weight,
-                                  use_wgan=wgan).to(dev)
+    reward_model_mt = RewardModel(
+        discriminator_mt,
+        xfer_adv_module,
+        transfer_pol_loss_weight,
+        # In apprenticeship learning we can just pass
+        # the model outputs straight through, just
+        # like in WGAN.
+        use_wgan=wgan or disc_al).to(dev)
     reward_evaluator_mt = RewardEvaluatorMT(
         task_ids_and_names=task_ids_and_demo_env_names,
         reward_model=reward_model_mt,
@@ -367,21 +387,24 @@ def main(
     else:
         print("No discriminator augmentations")
         aug_model = None
-    gail_optim = GAILOptimiser(dataset_mt=dataset_mt,
-                               discrim_model=discriminator_mt,
-                               buffer_num_samples=max(
-                                   disc_batch_size, disc_replay_mult *
-                                   sampler_batch_T * sampler_batch_B),
-                               batch_size=disc_batch_size,
-                               updates_per_itr=disc_up_per_iter,
-                               gp_weight=disc_gp_weight,
-                               dev=dev,
-                               aug_model=aug_model,
-                               lr=disc_lr,
-                               xfer_adv_weight=transfer_disc_loss_weight,
-                               xfer_adv_anneal=transfer_disc_anneal,
-                               xfer_adv_module=xfer_adv_module,
-                               use_wgan=wgan)
+    gail_optim = GAILOptimiser(
+        dataset_mt=dataset_mt,
+        discrim_model=discriminator_mt,
+        buffer_num_samples=max(
+            disc_batch_size,
+            disc_replay_mult * sampler_batch_T * sampler_batch_B),
+        batch_size=disc_batch_size,
+        updates_per_itr=disc_up_per_iter,
+        gp_weight=disc_gp_weight,
+        dev=dev,
+        aug_model=aug_model,
+        lr=disc_lr,
+        xfer_adv_weight=transfer_disc_loss_weight,
+        xfer_adv_anneal=transfer_disc_anneal,
+        xfer_adv_module=xfer_adv_module,
+        final_layer_only_mode=disc_al,
+        final_layer_only_mode_n_samples=disc_al_nsamples,
+        use_wgan=wgan)
 
     print("Setting up RL algorithm")
     # signature for arg: reward_model(obs_tensor, act_tensor) -> rewards

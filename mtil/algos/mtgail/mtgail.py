@@ -120,6 +120,7 @@ class MILBenchDiscriminatorMT(nn.Module):
             use_all_chans,
             use_sn,
             fc_dim=256,
+            final_feats_dim=None,
             act_rep_dim=32,
             ActivationCls=torch.nn.ReLU,
             **feat_gen_kwargs,
@@ -158,7 +159,10 @@ class MILBenchDiscriminatorMT(nn.Module):
             extra_dim = 0
         # the logit generator takes in both the image features and the
         # action encoding
-        reduce_layer = nn.Linear(fc_dim + extra_dim, fc_dim)
+        if final_feats_dim is None:
+            # by default, we do no additional downsampling in the final layer
+            final_feats_dim = fc_dim
+        reduce_layer = nn.Linear(fc_dim + extra_dim, final_feats_dim)
         if use_sn:
             reduce_layer = nn.utils.spectral_norm(reduce_layer)
         self.postproc = nn.Sequential(
@@ -167,16 +171,19 @@ class MILBenchDiscriminatorMT(nn.Module):
             # now: flat fc_dim-elem vector
         )
         self.ret_feats_dim = fc_dim + extra_dim
-        if use_sn:
-            assert len(self.task_ids_and_names) == 1, \
-                "SN only supported in single-task setting, for now"
-            self.mt_logits = SingleTaskAffineLayer(fc_dim, 1, use_sn=use_sn)
+        if len(self.task_ids_and_names) == 1:
+            self.mt_logits = SingleTaskAffineLayer(final_feats_dim,
+                                                   1,
+                                                   use_sn=use_sn)
         else:
-            self.mt_logits = MultiTaskAffineLayer(fc_dim, 1,
+            assert not use_sn, "SN not supported with multi-task"
+            self.mt_logits = MultiTaskAffineLayer(final_feats_dim, 1,
                                                   len(self.task_ids_and_names))
 
     def forward_no_preproc(self, obs_preproc, act_preproc, task_id):
         obs_features = self.feature_extractor(obs_preproc)
+        # WARNING: if you change all_features or the meaning of "postproc",
+        # then you need to update the _optimal_final_layer() helper!
         if self.use_actions:
             action_features = self.action_preproc(act_preproc)
             all_features = torch.cat((obs_features, action_features), dim=1)
@@ -249,6 +256,7 @@ class RewardModel(nn.Module):
         """GAIL policy reward, without entropy bonus (should be introduced
         elsewhere). Policy should maximise this."""
         if self.domain_xfer_weight:
+            assert not self.use_wgan, "wgan + dom. transfer not supported yet"
             sigmoid_logits, discrim_features = self.discrim(obs,
                                                             act,
                                                             *args,
@@ -325,10 +333,79 @@ def _compute_gail_stats(disc_logits, is_real_labels, is_wgan):
     return np_dict
 
 
+def _optimal_final_layer(model, expert_batch_iter, pol_replay_buffer,
+                         batch_size, n_eval_batches, aug_model, device):
+    """Snap the final layer weights to their optimal values under
+    apprenticeship learning loss. Implicitly constrained so that ||w||<=1,
+    ||b||=0 (||b||=0 is fine for app. learning)."""
+    assert isinstance(model.mt_logits, SingleTaskAffineLayer), \
+        "right now this only works with the single-task affine layer"
+    assert not model.mt_logits.use_sn, \
+        "currently this is also incompatible with spectral norm"
+
+    all_feats_expert = []
+    all_feats_novice = []
+
+    with torch.no_grad():
+        # we need the model in eval mode for this
+        old_training = model.training
+        model.eval()
+
+        for _ in range(n_eval_batches):
+            expert_data = next(expert_batch_iter)
+            expert_obs = expert_data['obs']
+            expert_acts = expert_data['acts']
+            sub_batch_size = batch_size // 2
+            pol_replay_samples = pol_replay_buffer.sample_batch(sub_batch_size)
+            pol_replay_samples = torchify_buffer(pol_replay_samples)
+            novice_obs = pol_replay_samples.all_observation
+
+            all_obs = tree_map(lambda *args: torch.cat(args, 0).to(device),
+                               expert_obs, novice_obs)
+            all_acts = torch.cat(
+                [expert_acts.to(torch.int64), pol_replay_samples.all_action],
+                dim=0).to(device)
+
+            if aug_model is not None:
+                # augmentations
+                aug_frames = aug_model(all_obs.observation)
+                all_obs = all_obs._replace(observation=aug_frames)
+
+            _, disc_feats_unproc = model(all_obs, all_acts, return_feats=True)
+            # FIXME(sam): this should be done *inside* the model!
+            disc_feats_all = model.postproc(disc_feats_unproc)
+
+            disc_feats_expert = disc_feats_all[:sub_batch_size]
+            disc_feats_novice = disc_feats_all[sub_batch_size:]
+
+            all_feats_expert.extend(disc_feats_expert.cpu().numpy())
+            all_feats_novice.extend(disc_feats_novice.cpu().numpy())
+
+        # put us back into the right mode now that we're done with eval
+        model.train(old_training)
+
+    # now set the weights appropriately
+    expert_mean = np.mean(all_feats_expert, axis=0)
+    novice_mean = np.mean(all_feats_novice, axis=0)
+    weight_diff = expert_mean - novice_mean
+    weight_diff_norm = np.linalg.norm(weight_diff)
+    opt_weights = weight_diff / max(weight_diff_norm, 1e-5)
+
+    # lin_layer.bias is of shape [out_features], while lin_layer.weight is of
+    # shape [out_features, in_features].
+    lin_layer = model.mt_logits.lin_layer
+    # zero out the bias; it won't make a difference to the (expert mean -
+    # novice mean) objective
+    lin_layer.bias[:] = 0.0
+    # the extra None is so that we have a [1,feature_dim]-shaped tensor
+    lin_layer.weight[:] = lin_layer.weight.new_tensor(opt_weights[None])
+
+
 class GAILOptimiser:
     def __init__(self, *, dataset_mt, discrim_model, buffer_num_samples,
                  batch_size, updates_per_itr, dev, aug_model, xfer_adv_weight,
-                 xfer_adv_anneal, xfer_adv_module, lr, use_wgan, gp_weight):
+                 xfer_adv_anneal, xfer_adv_module, lr, use_wgan, gp_weight,
+                 final_layer_only_mode, final_layer_only_mode_n_samples):
         assert batch_size % 2 == 0, \
             "batch size must be even so we can split between real & fake"
         self.model = discrim_model
@@ -342,6 +419,8 @@ class GAILOptimiser:
         self.use_wgan = use_wgan
         self.gp_weight = gp_weight
         self.xfer_adv_weight = xfer_adv_weight
+        self.final_layer_only_mode = final_layer_only_mode
+        self.final_layer_only_mode_n_samples = final_layer_only_mode_n_samples
         # if xfer_disc_anneal is True, then we anneal from 0 to 1
         self.xfer_disc_anneal = xfer_adv_anneal
         if self.xfer_adv_weight > 0:
@@ -400,6 +479,19 @@ class GAILOptimiser:
             assert (xfer_variant_mask[:1] == xfer_variant_mask).all()
             filtered_samples_xfer = samples[:, xfer_variant_mask[0]]
             self.xfer_replay_buffer.append_samples(filtered_samples_xfer)
+
+        if self.final_layer_only_mode:
+            print("Snapping final layer to its optimal value")
+            _optimal_final_layer(
+                model=self.model,
+                expert_batch_iter=self.expert_batch_iter,
+                pol_replay_buffer=self.pol_replay_buffer,
+                batch_size=self.batch_size,
+                n_eval_batches=int(
+                    np.ceil(self.final_layer_only_mode_n_samples /
+                            self.batch_size)),
+                aug_model=self.aug_model,
+                device=self.dev)
 
         # switch to train mode before taking any steps
         self.model.train()
@@ -479,7 +571,13 @@ class GAILOptimiser:
                 # cut the transfer env samples out of the logits
                 logits = logits_all[:-sub_batch_size]
             else:
-                logits = self.model(all_obs, all_acts)
+                if self.final_layer_only_mode:
+                    # cutting out gradients for the main model evaluation
+                    # hopefully makes this a bit less memory-intensive
+                    with torch.no_grad():
+                        logits = self.model(all_obs, all_acts)
+                else:
+                    logits = self.model(all_obs, all_acts)
 
             if self.use_wgan:
                 # Now assign label +1 for novice, -1 for expert. This means we
@@ -550,7 +648,6 @@ class GAILOptimiser:
                 grad_penalty = torch.mean((grad_norms - 1.0)**2)
                 loss = loss + self.gp_weight * grad_penalty
 
-
             if self.xfer_adv_model:
                 if self.xfer_disc_anneal:
                     progress = min(1, max(0, itr / float(n_itr)))
@@ -559,11 +656,21 @@ class GAILOptimiser:
                     xfer_adv_weight = self.xfer_adv_weight
                 loss = loss + xfer_adv_weight * xfer_loss
 
-            loss.backward()
-            self.opt.step()
+            if self.final_layer_only_mode:
+                print("Skipping actual optimiser step")
+            else:
+                loss.backward()
+                self.opt.step()
+
+            if self.use_wgan or self.final_layer_only_mode:
+                # center logits so that 0 = uncertain
+                stat_logits = logits - logits.mean()
+            else:
+                # for vanilla GAN, it's fine not to
+                stat_logits = logits
 
             # for logging; we'll average theses later
-            info_dict = _compute_gail_stats(logits, is_real_label,
+            info_dict = _compute_gail_stats(stat_logits, is_real_label,
                                             self.use_wgan)
             info_dict['discLoss'] = loss.item()
             if self.use_wgan:

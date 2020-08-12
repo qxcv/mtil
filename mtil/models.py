@@ -326,7 +326,8 @@ class SingleTaskAffineLayer(nn.Module):
     def __init__(self, in_chans, out_chans, use_sn):
         super().__init__()
         lin_layer = nn.Linear(in_chans, out_chans)
-        if use_sn:
+        self.use_sn = use_sn
+        if self.use_sn:
             lin_layer = nn.utils.spectral_norm(lin_layer)
         self.lin_layer = lin_layer
 
