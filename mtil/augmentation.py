@@ -195,7 +195,6 @@ class MILBenchAugmentations(KorniaAugmentations):
             noise=False,
             flip_ud=False,
             flip_lr=False,
-            rand_grey=False,
             colour_jitter=False,
             colour_jitter_mid=False,
             colour_jitter_ex=False,
@@ -210,7 +209,7 @@ class MILBenchAugmentations(KorniaAugmentations):
     ):
         transforms = []
         # TODO: tune hyperparameters of the augmentations
-        if colour_jitter or colour_jitter_ex:
+        if colour_jitter or colour_jitter_mid or colour_jitter_ex:
             assert sum([colour_jitter, colour_jitter_mid, colour_jitter_ex]) \
                 <= 1
             if colour_jitter_ex:
@@ -223,7 +222,7 @@ class MILBenchAugmentations(KorniaAugmentations):
                 transforms.append(
                     CIELabJitter(max_lum_scale=1.01, max_uv_rads=0.15))
 
-        if translate or rotate or translate_ex or rotate_ex:
+        if translate or rotate or translate_ex or rotate_ex or rotate_mid:
             assert sum([rotate, rotate_ex, rotate_mid]) <= 1
             if rotate:
                 rot_bounds = (-5, 5)
