@@ -62,14 +62,14 @@ def cli():
 @click.option("-T",
               "--sampler-time-steps",
               "sampler_batch_T",
-              default=16,
+              default=8,
               help="number of timesteps to advance each env when sampling")
 @click.option("--disc-batch-size",
-              default=32,
+              default=24,
               help="batch size for discriminator training")
 @click.option(
     "--disc-up-per-iter",
-    default=4,  # surprisingly, benefits from MORE updates
+    default=12,  # surprisingly, benefits from MORE updates
     help="number of discriminator steps per RL step")
 @click.option('--disc-replay-mult',
               type=int,
@@ -77,7 +77,7 @@ def cli():
               help="number of past epochs worth of interaction to save in "
               "discriminator replay buffer")
 @click.option("--total-n-steps",
-              default=4e6,
+              default=int(1e6),
               help="total number of steps to take in environment")
 @click.option("--bc-loss", default=0.0, help="behavioural cloning loss coeff")
 @click.option("--run-name",
@@ -117,7 +117,7 @@ def cli():
               type=str,
               default=None,
               help="Do rollouts in this env instead of the demo one")
-@click.option('--disc-lr', default=1e-4, help='discriminator learning rate')
+@click.option('--disc-lr', default=2e-5, help='discriminator learning rate')
 @click.option('--disc-use-act/--no-disc-use-act',
               default=True,
               help='whether discriminator gets action inputs')
@@ -142,13 +142,13 @@ def cli():
               default=4,
               help="number of minibatches to split each PPO batch into")
 @click.option("--ppo-epochs",
-              default=4,
+              default=12,
               help="number of PPO 'epochs' to train for at each PPO update")
-@click.option('--ppo-lr', default=2.5e-4, help='PPO learning rate')
-@click.option('--ppo-gamma', default=0.95, help='PPO discount factor (gamma)')
-@click.option('--ppo-lambda', default=0.95, help='PPO GAE lamdba')
-@click.option('--ppo-ent', default=1e-5, help='entropy bonus for PPO')
-@click.option('--ppo-adv-clip', default=0.05, help='PPO advantage clip ratio')
+@click.option('--ppo-lr', default=6e-5, help='PPO learning rate')
+@click.option('--ppo-gamma', default=0.8, help='PPO discount factor (gamma)')
+@click.option('--ppo-lambda', default=0.8, help='PPO GAE lamdba')
+@click.option('--ppo-ent', default=2.5e-5, help='entropy bonus for PPO')
+@click.option('--ppo-adv-clip', default=0.01, help='PPO advantage clip ratio')
 @click.option('--ppo-norm-adv/--no-ppo-norm-adv',
               default=False,
               help='whether to normalise PPO advantages')
@@ -165,7 +165,7 @@ def cli():
               default=1e-1,
               help='transfer loss weight for disc. (with --transfer-variant)')
 @click.option("--transfer-pol-loss-weight",
-              default=1e-1,
+              default=0.05,
               help='transfer loss weight for disc. (with --transfer-variant)')
 @click.option("--wgan/--no-wgan",
               default=False,
