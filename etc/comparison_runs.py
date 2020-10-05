@@ -13,6 +13,8 @@ import numpy as np
 import ray
 import yaml
 
+from mtil.utils.misc import sane_click_init
+
 DEMO_PATH_PATTERNS = {
     'move-to-corner': '~/repos/magical/demos-ea/move-to-corner-2020-03-*/*.pkl.gz',  # noqa: E501
     'move-to-region': '~/repos/magical/demos-ea/move-to-region-2020-04-*/*.pkl.gz',  # noqa: E501
@@ -640,4 +642,4 @@ def main(spec, suffix, out_dir, ray_connect, ray_ncpus, job_ngpus,
 
 
 if __name__ == '__main__':
-    main()
+    sane_click_init(main)
